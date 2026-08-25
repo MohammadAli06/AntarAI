@@ -1,0 +1,17 @@
+general:
+  name: "Qwen3-8B"
+  role: "general"
+  endpoint: "http://localhost:8080/completion"
+  description: "General reasoning and Q&A"
+
+coder:
+  name: "Qwen3-Coder"
+  role: "coder"
+  endpoint: "http://localhost:8080/completion"
+  description: "Code generation and debugging"
+
+vision:
+  name: "Qwen3-VL"
+  role: "vision"
+  endpoint: "http://localhost:8080/completion"
+  description: "Vision and multimodal tasks (OCR, image analysis)"
