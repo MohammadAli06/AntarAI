@@ -1,11 +1,12 @@
 import { Database, LayoutDashboard, Menu, Network, PanelLeftClose, PanelLeftOpen, ShieldCheck, Cpu, FileCheck, LogOut } from 'lucide-react'
 import { Icon } from '../ui/Icon'
 import type { NavItem, ViewId, UserRole } from '../../lib/types'
-import { getUser, clearToken } from '../../lib/auth'
+import { getUser } from '../../lib/auth'
 
 interface SidebarProps {
   activeView: ViewId
   onNavigate: (view: ViewId) => void
+  onLogout: () => void
   collapsed: boolean
   onToggle: () => void
   mobileOpen: boolean
@@ -20,22 +21,17 @@ const navigation: Array<NavItem & { icon: typeof LayoutDashboard }> = [
   { id: 'models', label: 'Models', description: 'Review registered models', icon: Cpu, roles: ['admin'] },
 ]
 
-export function Sidebar({ activeView, onNavigate, collapsed, onToggle, mobileOpen, onCloseMobile }: SidebarProps) {
+export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle, mobileOpen, onCloseMobile }: SidebarProps) {
   const user = getUser()
   const role: UserRole = (user?.role as UserRole) || 'engineer'
 
   // Filter navigation items based on user role
   const visibleNav = navigation.filter((item) => !item.roles || item.roles.includes(role))
 
-  function handleLogout() {
-    clearToken()
-    window.location.reload()
-  }
-
   return (
     <>
       {mobileOpen && <button aria-label="Close navigation" className="fixed inset-0 z-30 bg-black/55 lg:hidden" onClick={onCloseMobile} />}
-      <aside className={`fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col border-r border-line bg-[#091827] transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 ${collapsed ? 'lg:w-[78px]' : ''} ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <aside className={`fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col border-r border-line bg-navy transition-transform duration-200 lg:static lg:z-auto lg:translate-x-0 ${collapsed ? 'lg:w-[78px]' : ''} ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className={`flex h-[72px] items-center border-b border-line px-5 ${collapsed ? 'lg:justify-center lg:px-0' : 'justify-between'}`}>
           <button className="group flex min-h-11 items-center gap-3 text-left" onClick={() => onNavigate('workspace')} aria-label="Open workspace">
             <span className="relative flex size-8 shrink-0 items-center justify-center border border-signal/40 bg-signal-dim/55 text-signal">
@@ -84,17 +80,22 @@ export function Sidebar({ activeView, onNavigate, collapsed, onToggle, mobileOpe
         </div>
 
         <div className={`border-t border-line p-3 ${collapsed ? 'lg:px-2' : ''}`}>
-          <div className={`mb-2 flex items-center justify-between border border-line bg-ink/35 px-3 py-2 ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}>
+          <div className={`mb-2 flex items-center justify-between border border-line bg-raised/50 px-3 py-2 ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}>
             <div className="flex items-center gap-2">
-              <span className="size-1.5 rounded-full bg-signal shadow-[0_0_8px_rgba(84,214,197,0.8)]" />
+              <span className="size-1.5 rounded-full bg-signal" />
               <span className={`font-mono text-[9px] uppercase tracking-[0.12em] text-muted ${collapsed ? 'lg:hidden' : ''}`}>
                 {user?.username || 'User'}
               </span>
             </div>
-            <button onClick={handleLogout} title="Sign Out" className={`text-slate-500 hover:text-red-400 ${collapsed ? 'lg:hidden' : ''}`}>
-              <Icon icon={LogOut} size={13} />
-            </button>
           </div>
+          <button
+            onClick={onLogout}
+            title="Sign out"
+            className={`flex min-h-11 w-full items-center gap-3 border border-transparent px-3 text-left text-muted transition-colors hover:border-danger/25 hover:bg-danger/10 hover:text-danger ${collapsed ? 'lg:justify-center lg:px-0' : ''}`}
+          >
+            <Icon icon={LogOut} size={16} />
+            <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${collapsed ? 'lg:hidden' : ''}`}>Sign out</span>
+          </button>
           <button onClick={onToggle} className={`hidden min-h-10 w-full items-center gap-3 px-3 text-muted hover:text-slate-100 lg:flex ${collapsed ? 'justify-center px-0' : ''}`} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}>
             <Icon icon={collapsed ? PanelLeftOpen : PanelLeftClose} size={17} />
             <span className={`font-mono text-[10px] uppercase tracking-[0.12em] ${collapsed ? 'lg:hidden' : ''}`}>{collapsed ? 'Expand' : 'Collapse'}</span>

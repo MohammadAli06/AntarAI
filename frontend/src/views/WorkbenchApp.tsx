@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchModels, fetchOutputs, fetchSovereigntyStatus } from '../lib/api'
+import { clearToken } from '../lib/auth'
 import { AppShell } from '../components/layout/AppShell'
 import { WorkspaceView } from './WorkspaceView'
 import { ApprovalsView } from './ApprovalsView'
 import { KnowledgeBaseView } from './KnowledgeBaseView'
 import { SovereigntyMonitorView } from './SovereigntyMonitorView'
 import { ModelsView } from './ModelsView'
-import type { ApiErrorState, ModelInfo, OutputFile, SovereigntyStatus, ViewId } from '../lib/types'
+import type { ApiErrorState, ModelInfo, OutputFile, SovereigntyStatus, Theme, ViewId } from '../lib/types'
 
-export function WorkbenchApp() {
+interface WorkbenchAppProps {
+  onLogout: () => void
+  theme: Theme
+  onToggleTheme: () => void
+}
+
+export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppProps) {
   const [activeView, setActiveView] = useState<ViewId>('workspace')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -40,7 +47,7 @@ export function WorkbenchApp() {
     ])
   }, [loadOutputs, loadSovereignty])
 
-  return <AppShell activeView={activeView} onNavigate={setActiveView} sovereignty={sovereignty} onRefreshSovereignty={loadSovereignty} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} mobileOpen={mobileOpen} onToggleMobile={() => setMobileOpen((value) => !value)} onCloseMobile={() => setMobileOpen(false)}>
+  return <AppShell activeView={activeView} onNavigate={setActiveView} onLogout={onLogout} theme={theme} onToggleTheme={onToggleTheme} sovereignty={sovereignty} onRefreshSovereignty={loadSovereignty} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((value) => !value)} mobileOpen={mobileOpen} onToggleMobile={() => setMobileOpen((value) => !value)} onCloseMobile={() => setMobileOpen(false)}>
     {errors.some((error) => error.scope === 'sovereignty') && <div className="mb-5 flex items-center justify-between gap-3 border border-warning/25 bg-warning/10 px-4 py-3 text-xs text-warning" role="status"><span>Local API is not reachable. Start the backend to load live workspace data.</span><button onClick={loadSovereignty} className="font-mono text-[10px] uppercase tracking-[0.1em] underline underline-offset-4">Retry</button></div>}
     {activeView === 'workspace' && <WorkspaceView outputs={outputs} outputsLoading={loading.outputs} outputsError={errors.find((error) => error.scope === 'outputs')?.message} onRefreshOutputs={loadOutputs} sovereignty={sovereignty} onRefreshSovereignty={loadSovereignty} />}
     {activeView === 'approvals' && <ApprovalsView />}

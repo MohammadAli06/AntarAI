@@ -3,13 +3,17 @@ import { useState } from 'react'
 import { login as apiLogin } from '../lib/api'
 import { setToken, setUser } from '../lib/auth'
 import { Icon } from '../components/ui/Icon'
+import { ThemeToggle } from '../components/ui/ThemeToggle'
+import type { Theme } from '../lib/types'
 
 interface AuthPageProps {
+  theme: Theme
+  onToggleTheme: () => void
   onAuthenticate: () => void
   onBackHome: () => void
 }
 
-export function AuthPage({ onAuthenticate, onBackHome }: AuthPageProps) {
+export function AuthPage({ theme, onToggleTheme, onAuthenticate, onBackHome }: AuthPageProps) {
   const [username, setUsername]   = useState('')
   const [password, setPassword]   = useState('')
   const [showPass, setShowPass]   = useState(false)
@@ -46,16 +50,19 @@ export function AuthPage({ onAuthenticate, onBackHome }: AuthPageProps) {
           </span>
           <span className="text-xl">Sovereign AI Workbench</span>
         </button>
-        <nav className="hidden items-center gap-8 text-xs text-slate-300 md:flex">
-          <button onClick={onBackHome} className="text-signal">Home</button>
-          <button>Capabilities</button>
-          <button>Documentation</button>
-        </nav>
+        <div className="flex items-center gap-3">
+          <nav className="hidden items-center gap-8 text-xs text-slate-300 md:flex">
+            <button onClick={onBackHome} className="text-signal">Home</button>
+            <button>Capabilities</button>
+            <button>Documentation</button>
+          </nav>
+          <ThemeToggle theme={theme} onToggle={onToggleTheme} compact />
+        </div>
       </header>
 
       {/* ── Main card ──────────────────────────────────────────────────── */}
       <main className="flex flex-1 items-center justify-center px-5 pb-14 pt-8 sm:px-8">
-        <section className="w-full max-w-[420px] rounded-xl border border-line bg-panel/70 p-7 shadow-[0_30px_80px_rgba(0,0,0,0.55)] backdrop-blur-sm sm:p-8">
+        <section className="w-full max-w-[420px] rounded-xl border border-line bg-panel/70 p-7 shadow-panel backdrop-blur-sm sm:p-8">
 
           {/* Lock icon + title */}
           <div className="mb-7 text-center">
@@ -68,7 +75,7 @@ export function AuthPage({ onAuthenticate, onBackHome }: AuthPageProps) {
 
           {/* Error banner */}
           {error && (
-            <div className="mb-5 flex items-center gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 text-[13px] text-red-400">
+            <div className="mb-5 flex items-center gap-2.5 rounded-lg border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13px] text-danger">
               <Icon icon={AlertCircle} size={15} className="shrink-0" />
               {error}
             </div>
@@ -124,7 +131,7 @@ export function AuthPage({ onAuthenticate, onBackHome }: AuthPageProps) {
               id="auth-sign-in"
               type="submit"
               disabled={loading}
-              className="mt-2 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-signal px-5 text-sm font-semibold text-ink transition-all hover:bg-[#79e8d9] disabled:opacity-60 disabled:cursor-not-allowed"
+              className="mt-2 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-signal px-5 text-sm font-semibold text-action transition-all hover:bg-signal/80 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {loading
                 ? <><Icon icon={Loader2} size={15} className="animate-spin" /> Authenticating…</>
@@ -150,7 +157,7 @@ export function AuthPage({ onAuthenticate, onBackHome }: AuthPageProps) {
         </section>
       </main>
 
-      <footer className="border-t border-line/60 bg-[#081221] py-8 text-center text-[11px] uppercase tracking-[0.2em] text-slate-500">
+      <footer className="border-t border-line/60 bg-navy py-8 text-center text-[11px] uppercase tracking-[0.2em] text-slate-500">
         Built for MRPL | Smart India Hackathon 2026
       </footer>
     </div>

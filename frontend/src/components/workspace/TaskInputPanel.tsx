@@ -62,8 +62,8 @@ export function TaskInputPanel({ onSubmit, loading, selectedFile, onFileSelect }
             </button>
             {fileError && <p className="mt-2 text-[11px] text-danger" role="alert">{fileError}</p>}
           </div>
-          <button type="submit" disabled={!message.trim() || loading} className="inline-flex min-h-11 items-center justify-center gap-2 bg-signal px-5 text-xs font-semibold uppercase tracking-[0.08em] text-ink transition-colors hover:bg-[#78e4d6] disabled:cursor-not-allowed disabled:bg-raised disabled:text-slate-500">
-            {loading ? <span className="size-3.5 animate-spin rounded-full border-2 border-ink/30 border-t-ink" /> : <Icon icon={ArrowUp} size={16} strokeWidth={2.2} />}
+          <button type="submit" disabled={!message.trim() || loading} className="inline-flex min-h-11 items-center justify-center gap-2 bg-signal px-5 text-xs font-semibold uppercase tracking-[0.08em] text-action transition-colors hover:bg-signal/80 disabled:cursor-not-allowed disabled:bg-raised disabled:text-slate-500">
+            {loading ? <span className="size-3.5 animate-spin rounded-full border-2 border-action/30 border-t-action" /> : <Icon icon={ArrowUp} size={16} strokeWidth={2.2} />}
             {loading ? 'Running' : 'Run task'}
           </button>
         </div>

@@ -56,22 +56,22 @@ export function SandboxPanel({ objective, response, loading, steps }: SandboxPan
       </div>
 
       <div className="grid gap-0 border-b border-line md:grid-cols-2">
-        <section className="border-b border-line bg-[#070f1a] p-4 md:border-b-0 md:border-r">
+        <section className="border-b border-line bg-navy p-4 md:border-b-0 md:border-r">
           <div className="mb-3 flex items-center justify-between text-[11px] text-muted">
             <span>solution.py</span>
             <span className="font-mono">editor</span>
           </div>
-          <pre className="max-h-[280px] overflow-auto bg-[#050a13] p-3 font-mono text-[11px] leading-6 text-[#77e5d4]">
+          <pre className="max-h-[280px] overflow-auto bg-ink p-3 font-mono text-[11px] leading-6 text-signal">
             <code>{code}</code>
           </pre>
         </section>
 
-        <section className="bg-[#081423] p-4">
+        <section className="bg-navy p-4">
           <div className="mb-3 flex items-center justify-between text-[11px] text-muted">
             <span>Sandbox execution</span>
             <span className="font-mono">runtime</span>
           </div>
-          <div className="max-h-[280px] overflow-auto bg-[#06101b] p-3 font-mono text-[11px] leading-6 text-slate-300">
+          <div className="max-h-[280px] overflow-auto bg-ink p-3 font-mono text-[11px] leading-6 text-slate-300">
             {executionLines.map((line, index) => (
               <div key={`${line}-${index}`}>{line}</div>
             ))}
@@ -88,7 +88,7 @@ export function SandboxPanel({ objective, response, loading, steps }: SandboxPan
         <button
           type="button"
           onClick={downloadCode}
-          className="inline-flex min-h-10 items-center justify-center gap-2 bg-signal px-4 text-xs font-semibold uppercase tracking-[0.08em] text-ink hover:bg-[#78e4d6]"
+          className="inline-flex min-h-10 items-center justify-center gap-2 bg-signal px-4 text-xs font-semibold uppercase tracking-[0.08em] text-action hover:bg-signal/80"
         >
           <Icon icon={Download} size={14} />
           Download code

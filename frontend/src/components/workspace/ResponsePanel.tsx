@@ -15,7 +15,7 @@ function renderResponse(response: string) {
   return chunks.map((chunk, index) => {
     if (chunk.startsWith('```')) {
       const code = chunk.replace(/^```\w*\n?/, '').replace(/```$/, '').trim()
-      return <pre key={index} className="my-4 overflow-x-auto border border-line bg-[#091725] p-4 font-mono text-[11px] leading-6 text-signal/90"><code>{code}</code></pre>
+      return <pre key={index} className="my-4 overflow-x-auto border border-line bg-ink p-4 font-mono text-[11px] leading-6 text-signal/90"><code>{code}</code></pre>
     }
     return <span key={index}>{chunk.split('\n').map((line, lineIndex) => <span key={lineIndex}>{line}{lineIndex < chunk.split('\n').length - 1 && <br />}</span>)}</span>
   })

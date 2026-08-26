@@ -39,7 +39,7 @@ export function AgentTimeline({ steps, loading }: AgentTimelineProps) {
             const current = isVisible && !complete
             return <li key={`${step}-${index}`} className={`relative flex gap-3 ${index < steps.length - 1 ? 'pb-5' : ''} ${isVisible ? 'timeline-appear' : 'invisible'}`}>
               {index < steps.length - 1 && <span className={`absolute left-[9px] top-5 h-full w-px ${index < visibleCount - 1 ? 'bg-signal/45' : 'bg-line'}`} />}
-              <span className={`relative z-10 flex size-[19px] shrink-0 items-center justify-center border ${complete ? 'border-signal bg-signal text-ink' : current ? 'border-signal bg-signal-dim text-signal' : 'border-line bg-raised text-slate-600'}`}>
+              <span className={`relative z-10 flex size-[19px] shrink-0 items-center justify-center border ${complete ? 'border-signal bg-signal text-action' : current ? 'border-signal bg-signal-dim text-signal' : 'border-line bg-raised text-slate-600'}`}>
                 {complete ? <Icon icon={Check} size={12} strokeWidth={2.5} /> : current ? <Icon icon={LoaderCircle} size={12} className="animate-spin" /> : <Icon icon={Circle} size={7} />}
               </span>
               <div className="min-w-0 pt-0.5"><p className={`text-xs leading-5 ${complete ? 'text-slate-300' : current ? 'text-signal' : 'text-muted'}`}>{cleanStep(step)}</p>{current && <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.12em] text-muted">In progress</p>}</div>

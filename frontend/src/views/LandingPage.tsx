@@ -1,7 +1,11 @@
 import { ArrowRight, Bot, Cable, Database, Lock, Shield, SquareTerminal } from 'lucide-react'
 import { Icon } from '../components/ui/Icon'
+import { ThemeToggle } from '../components/ui/ThemeToggle'
+import type { Theme } from '../lib/types'
 
 interface LandingPageProps {
+  theme: Theme
+  onToggleTheme: () => void
   onLogin: () => void
   onEnter: () => void
 }
@@ -17,7 +21,7 @@ const faq = [
   },
 ]
 
-export function LandingPage({ onLogin, onEnter }: LandingPageProps) {
+export function LandingPage({ theme, onToggleTheme, onLogin, onEnter }: LandingPageProps) {
   return (
     <div className="landing-shell text-slate-100">
       <header className="mx-auto flex w-full max-w-[1180px] items-center justify-between px-5 py-5 sm:px-8">
@@ -32,7 +36,10 @@ export function LandingPage({ onLogin, onEnter }: LandingPageProps) {
           <button>Capabilities</button>
           <button>Documentation</button>
         </nav>
-        <button onClick={onLogin} className="rounded border border-signal/60 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-signal hover:bg-signal-dim/30">Login</button>
+        <div className="flex items-center gap-2">
+          <ThemeToggle theme={theme} onToggle={onToggleTheme} compact />
+          <button onClick={onLogin} className="rounded border border-signal/60 px-4 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-signal hover:bg-signal-dim/30">Login</button>
+        </div>
       </header>
 
       <main className="mx-auto w-full max-w-[1180px] px-5 pb-12 pt-6 sm:px-8 sm:pt-8">
@@ -40,7 +47,7 @@ export function LandingPage({ onLogin, onEnter }: LandingPageProps) {
           <div className="mx-auto mb-5 inline-flex items-center gap-2 rounded-full border border-line bg-panel/40 px-4 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-slate-300">
             <span className="size-2 rounded-full bg-signal" />System status: air-gapped
           </div>
-          <h1 className="mx-auto max-w-[760px] text-4xl font-semibold leading-tight tracking-tight sm:text-6xl">Confidential AI,<nobr> </nobr>Fully On-Premise</h1>
+          <h1 className="mx-auto max-w-[760px] text-4xl font-semibold leading-tight tracking-tight sm:text-6xl">Confidential AI,<span className="whitespace-nowrap"> Fully On-Premise</span></h1>
           <p className="mx-auto mt-6 max-w-[760px] text-base leading-8 text-slate-300">
             An air-gapped agentic AI assistant for industrial knowledge work. Zero data leaves your infrastructure, built for highly regulated environments.
           </p>
@@ -51,7 +58,7 @@ export function LandingPage({ onLogin, onEnter }: LandingPageProps) {
             <span className="rounded border border-line bg-panel/35 px-3 py-2">Open-Weight Models</span>
           </div>
 
-          <button onClick={onEnter} className="mt-9 inline-flex min-h-12 items-center justify-center gap-2 rounded bg-signal px-8 text-sm font-semibold text-ink transition-colors hover:bg-[#79e8d9]">
+          <button onClick={onEnter} className="mt-9 inline-flex min-h-12 items-center justify-center gap-2 rounded bg-signal px-8 text-sm font-semibold text-action transition-colors hover:bg-signal/80">
             Enter Workbench <Icon icon={ArrowRight} size={16} />
           </button>
         </section>
@@ -123,7 +130,7 @@ export function LandingPage({ onLogin, onEnter }: LandingPageProps) {
         </section>
       </main>
 
-      <footer className="border-t border-line/60 bg-[#081221] py-8 text-center text-[11px] uppercase tracking-[0.2em] text-slate-500">
+      <footer className="border-t border-line/60 bg-navy py-8 text-center text-[11px] uppercase tracking-[0.2em] text-slate-500">
         Built for MRPL | Smart India Hackathon 2026
       </footer>
     </div>

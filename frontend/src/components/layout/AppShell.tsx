@@ -3,11 +3,15 @@ import { RefreshCw } from 'lucide-react'
 import { Sidebar, MobileMenuButton } from './Sidebar'
 import { Icon } from '../ui/Icon'
 import { StatusBadge } from '../ui/StatusBadge'
-import type { SovereigntyStatus, ViewId } from '../../lib/types'
+import { ThemeToggle } from '../ui/ThemeToggle'
+import type { SovereigntyStatus, Theme, ViewId } from '../../lib/types'
 
 interface AppShellProps {
   activeView: ViewId
   onNavigate: (view: ViewId) => void
+  onLogout: () => void
+  theme: Theme
+  onToggleTheme: () => void
   children: ReactNode
   sovereignty: SovereigntyStatus | null
   onRefreshSovereignty: () => void
@@ -26,13 +30,13 @@ const pageTitles: Record<ViewId, { title: string; detail: string }> = {
   models: { title: 'Models', detail: 'On-premise model registry' },
 }
 
-export function AppShell({ activeView, onNavigate, children, sovereignty, onRefreshSovereignty, sidebarCollapsed, onToggleSidebar, mobileOpen, onToggleMobile, onCloseMobile }: AppShellProps) {
+export function AppShell({ activeView, onNavigate, onLogout, theme, onToggleTheme, children, sovereignty, onRefreshSovereignty, sidebarCollapsed, onToggleSidebar, mobileOpen, onToggleMobile, onCloseMobile }: AppShellProps) {
   const page = pageTitles[activeView]
   const isLocal = sovereignty?.online !== false
 
   return (
     <div className="flex min-h-screen bg-ink text-slate-100">
-      <Sidebar activeView={activeView} onNavigate={onNavigate} collapsed={sidebarCollapsed} onToggle={onToggleSidebar} mobileOpen={mobileOpen} onCloseMobile={onCloseMobile} />
+      <Sidebar activeView={activeView} onNavigate={onNavigate} onLogout={onLogout} collapsed={sidebarCollapsed} onToggle={onToggleSidebar} mobileOpen={mobileOpen} onCloseMobile={onCloseMobile} />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex min-h-[72px] items-center justify-between border-b border-line bg-ink/90 px-4 backdrop-blur-md sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3 sm:gap-4">
@@ -47,6 +51,7 @@ export function AppShell({ activeView, onNavigate, children, sovereignty, onRefr
           </div>
           <div className="flex shrink-0 items-center gap-2 sm:gap-4">
             <button onClick={onRefreshSovereignty} className="hidden size-9 items-center justify-center text-muted hover:text-slate-100 sm:flex" aria-label="Refresh locality status" title="Refresh locality status"><Icon icon={RefreshCw} size={15} /></button>
+            <ThemeToggle theme={theme} onToggle={onToggleTheme} compact />
             <StatusBadge tone={isLocal ? 'success' : 'warning'} compact>{isLocal ? 'Fully local' : 'Status unavailable'}</StatusBadge>
           </div>
         </header>

@@ -1,3 +1,5 @@
+export type Theme = 'dark' | 'light'
+
 export type ViewId = 'workspace' | 'approvals' | 'knowledge-base' | 'sovereignty-monitor' | 'models'
 
 export type UserRole = 'engineer' | 'approver' | 'admin'

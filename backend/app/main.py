@@ -26,6 +26,8 @@ from app.agent.orchestrator import run_agent
 from app.auth import create_access_token, get_current_user, verify_password
 from app.database import Document, Task, User, create_tables, get_db
 from app.models.registry import get_call_count, list_models
+from app.tools.ocr_extractor import extract_text
+from app.rag.ingestor import ingest_document
 from seed import seed_users
 
 # ---------------------------------------------------------------------------
@@ -48,11 +50,11 @@ for d in (_DOCUMENTS_DIR, _IMAGES_DIR, _OUTPUTS_DIR):
 app = FastAPI(
     title="AntarAI — Sovereign Agentic AI Workbench",
     description=(
-        "On-premise, air-gapped AI assistant for confidential industrial work. "
-        "Routes tasks to local open-weight LLMs via llama.cpp. "
+        "On-premise, air-gapped AI workbench for MRPL. "
+        "Powered by Qwen3-8B-Q4_K_M (Qwen/Qwen3-8B-GGUF) via llama.cpp. "
         "Zero external network calls by design."
     ),
-    version="0.2.0",
+    version="1.0.0",
 )
 
 # CORS — allow frontend dev server (e.g. localhost:3000, localhost:5173)
@@ -230,7 +232,7 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Upload a file (PDF, image, etc.) for later processing."""
+    """Upload a file (PDF, image, etc.). Triggers local OCR + ChromaDB ingestion."""
     filename = file.filename
     ext = Path(filename).suffix.lower()
     save_dir = (
@@ -248,16 +250,40 @@ async def upload_file(
         file_type=ext.lstrip("."),
         size_bytes=len(content),
         uploaded_by=current_user.id,
+        indexed="pending",
     )
     db.add(doc)
     db.commit()
+    db.refresh(doc)
+
+    # Background: OCR → ChromaDB ingestion
+    indexed_status = "pending"
+    chunks_indexed = 0
+    try:
+        extracted = extract_text(str(dest))
+        if extracted and not extracted.startswith("["):
+            ingest_result = ingest_document(
+                text=extracted,
+                filename=filename,
+                doc_id=doc.id,
+            )
+            indexed_status = ingest_result["status"]
+            chunks_indexed = ingest_result.get("chunks", 0)
+        doc.indexed = indexed_status
+        db.commit()
+    except Exception as exc:
+        doc.indexed = "failed"
+        db.commit()
 
     return {
         "status": "uploaded",
         "filename": filename,
         "path": str(dest),
         "size_bytes": len(content),
+        "indexed": indexed_status,
+        "chunks_indexed": chunks_indexed,
     }
+
 
 
 @app.get("/outputs", tags=["files"])
@@ -297,19 +323,31 @@ async def sovereignty_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Return sovereignty proof stats — proves zero external network calls."""
+    """Return sovereignty proof stats — proves zero external network calls.
+    
+    Counts:
+      - local_model_calls: real in-process counter incremented by call_model()
+      - local_files_accessed: total documents uploaded (SQLite Document table)
+      - external_calls: always 0 by architectural design
+    """
     model_calls = get_call_count()
+    # Real counts from SQLite
     file_count = db.query(Document).count()
+    task_count = db.query(Task).count()
+    outputs_count = sum(1 for f in _OUTPUTS_DIR.iterdir() if f.is_file())
+
     return SovereigntyStatus(
         external_calls=0,
         local_model_calls=model_calls,
         local_files_accessed=file_count,
         verdict=(
-            "✅ SOVEREIGN — All processing remained on-premise"
+            f"SOVEREIGN — {model_calls} model calls, {task_count} tasks, "
+            f"{outputs_count} documents generated — all on-premise"
             if model_calls > 0
-            else "✅ SOVEREIGN — System ready, no calls made yet"
+            else "SOVEREIGN — Qwen3-8B-Q4_K_M ready, awaiting first query"
         ),
     )
+
 
 
 # ---------------------------------------------------------------------------

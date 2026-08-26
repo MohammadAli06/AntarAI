@@ -229,8 +229,21 @@ export async function rejectTask(taskId: number): Promise<void> {
   await request(`/tasks/${taskId}/reject`, { method: 'POST' })
 }
 
-export async function deleteDocument(docId: number): Promise<void> {
-  await request(`/knowledge-base/${docId}`, { method: 'DELETE' })
+export async function downloadOutputFile(filename: string): Promise<void> {
+  const headers = getAuthHeaders()
+  const response = await fetch(`${API_BASE_URL}/outputs/${encodeURIComponent(filename)}`, { headers })
+  if (!response.ok) {
+    throw new Error(`Failed to download file: ${response.statusText}`)
+  }
+  const blob = await response.blob()
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  window.URL.revokeObjectURL(url)
 }
 
 export const apiBaseUrl = API_BASE_URL
