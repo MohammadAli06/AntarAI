@@ -66,8 +66,18 @@ body {
     rgb(var(--color-ink));
 }
 
+/* Full-height main content — workspace uses overflow-hidden, not scroll on body */
 #root {
-  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Allow full-height scroll within #root children when needed */
+.h-full-screen {
+  height: 100vh;
+  overflow: hidden;
 }
 
 .landing-shell {
@@ -268,6 +278,14 @@ textarea:focus-visible {
   .hover\\:text-slate-100:hover { color: rgb(var(--color-text-primary)); }
   .hover\\:text-slate-200:hover { color: rgb(var(--color-text-secondary)); }
   .hover\\:text-slate-300:hover { color: rgb(var(--color-text-tertiary)); }
+
+  /* Extra tiny leading for dense info blocks */
+  .leading-3\.5 { line-height: 0.875rem; }
+
+  /* Opacity shorthand variants used in new components */
+  .bg-signal\/8 { background-color: rgb(var(--color-signal) / 8%); }
+  .bg-warning\/8 { background-color: rgb(var(--color-warning) / 8%); }
+  .bg-danger\/8  { background-color: rgb(var(--color-danger)  / 8%); }
 }
 
 :root[data-theme='light'] .text-slate-100 { color: rgb(var(--color-text-primary)) !important; }
@@ -317,6 +335,10 @@ textarea:focus-visible {
   animation: panel-enter 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.slide-in-right {
+  animation: slide-in-right 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @keyframes timeline-appear {
   from {
     opacity: 0;
@@ -336,6 +358,17 @@ textarea:focus-visible {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
   }
 }
 

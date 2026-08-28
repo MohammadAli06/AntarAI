@@ -1,10 +1,10 @@
 import type { ReactNode } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { Cpu, Shield } from 'lucide-react'
 import { Sidebar, MobileMenuButton } from './Sidebar'
 import { Icon } from '../ui/Icon'
-import { StatusBadge } from '../ui/StatusBadge'
 import { ThemeToggle } from '../ui/ThemeToggle'
-import type { SovereigntyStatus, Theme, ViewId } from '../../lib/types'
+import type { SovereigntyStatus, Theme, UserRole, ViewId } from '../../lib/types'
+import { getUser } from '../../lib/auth'
 
 interface AppShellProps {
   activeView: ViewId
@@ -20,43 +20,125 @@ interface AppShellProps {
   mobileOpen: boolean
   onToggleMobile: () => void
   onCloseMobile: () => void
+  demoRole: UserRole
+  onDemoRoleChange: (role: UserRole) => void
 }
 
-const pageTitles: Record<ViewId, { title: string; detail: string }> = {
-  workspace: { title: 'Workspace', detail: 'Confidential task execution' },
-  approvals: { title: 'Approvals', detail: 'Supervisor review & document authorization' },
-  'knowledge-base': { title: 'Knowledge Base', detail: 'Local document index' },
-  'sovereignty-monitor': { title: 'Sovereignty Monitor', detail: 'Runtime locality and audit trail' },
-  models: { title: 'Models', detail: 'On-premise model registry' },
-}
+const DEMO_ROLES: { value: UserRole; label: string }[] = [
+  { value: 'engineer', label: 'Engineer' },
+  { value: 'approver', label: 'Approver' },
+  { value: 'admin', label: 'Admin' },
+]
 
-export function AppShell({ activeView, onNavigate, onLogout, theme, onToggleTheme, children, sovereignty, onRefreshSovereignty, sidebarCollapsed, onToggleSidebar, mobileOpen, onToggleMobile, onCloseMobile }: AppShellProps) {
-  const page = pageTitles[activeView]
-  const isLocal = sovereignty?.online !== false
+export function AppShell({
+  activeView,
+  onNavigate,
+  onLogout,
+  theme,
+  onToggleTheme,
+  children,
+  sovereignty,
+  onRefreshSovereignty: _onRefreshSovereignty,
+  sidebarCollapsed,
+  onToggleSidebar,
+  mobileOpen,
+  onToggleMobile,
+  onCloseMobile,
+  demoRole,
+  onDemoRoleChange,
+}: AppShellProps) {
+  const user = getUser()
+  const isAirGapped = sovereignty?.online !== false && sovereignty?.externalCalls === 0
 
   return (
     <div className="flex min-h-screen bg-ink text-slate-100">
-      <Sidebar activeView={activeView} onNavigate={onNavigate} onLogout={onLogout} collapsed={sidebarCollapsed} onToggle={onToggleSidebar} mobileOpen={mobileOpen} onCloseMobile={onCloseMobile} />
+      <Sidebar
+        activeView={activeView}
+        onNavigate={onNavigate}
+        onLogout={onLogout}
+        collapsed={sidebarCollapsed}
+        onToggle={onToggleSidebar}
+        mobileOpen={mobileOpen}
+        onCloseMobile={onCloseMobile}
+        role={demoRole}
+      />
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex min-h-[72px] items-center justify-between border-b border-line bg-ink/90 px-4 backdrop-blur-md sm:px-6 lg:px-8">
-          <div className="flex min-w-0 items-center gap-3 sm:gap-4">
+        {/* ── Persistent Header ──────────────────────────────────────────── */}
+        <header className="sticky top-0 z-20 flex min-h-[60px] items-center justify-between border-b border-line bg-ink/95 px-4 backdrop-blur-md sm:px-5">
+          {/* Left: mobile toggle + branding */}
+          <div className="flex min-w-0 items-center gap-3">
             <MobileMenuButton onClick={onToggleMobile} />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2.5">
-                <h1 className="truncate text-sm font-semibold tracking-tight text-slate-100 sm:text-base">Sovereign AI Workbench</h1>
-                <span className="hidden border-l border-line pl-2.5 font-mono text-[9px] uppercase tracking-[0.14em] text-slate-600 sm:inline">MRPL / PS 26117</span>
+            <div className="hidden min-w-0 sm:block">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-semibold tracking-tight text-slate-100">AntarAI</span>
+                <span className="text-slate-700">/</span>
+                <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-slate-600">MRPL · Engineering Workspace</span>
               </div>
-              <p className="mt-1 truncate text-[11px] text-muted">{page.title} <span className="px-1 text-slate-700">/</span> {page.detail}</p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2 sm:gap-4">
-            <button onClick={onRefreshSovereignty} className="hidden size-9 items-center justify-center text-muted hover:text-slate-100 sm:flex" aria-label="Refresh locality status" title="Refresh locality status"><Icon icon={RefreshCw} size={15} /></button>
+
+          {/* Right: sovereignty pill + resource indicators + demo role + theme + user */}
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            {/* Sovereignty pill — always visible */}
+            <div
+              className={`hidden items-center gap-1.5 border px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.12em] sm:flex ${
+                isAirGapped
+                  ? 'border-signal/30 bg-signal/8 text-signal'
+                  : 'border-warning/30 bg-warning/8 text-warning'
+              }`}
+            >
+              <span className={`size-1.5 rounded-full ${isAirGapped ? 'bg-signal' : 'bg-warning animate-pulse'}`} />
+              {isAirGapped ? 'Air-Gapped' : 'Status Unknown'}
+            </div>
+
+            {/* GPU indicator */}
+            <div className="hidden items-center gap-1 xl:flex">
+              <Icon icon={Cpu} size={12} className="text-muted" />
+              <span className="font-mono text-[9px] text-muted">GPU 63%</span>
+            </div>
+
+            {/* Outbound counter */}
+            <div className="hidden items-center gap-1 border border-line px-2 py-1 xl:flex">
+              <span className="font-mono text-[9px] text-signal">0</span>
+              <span className="font-mono text-[9px] text-slate-600">OUTBOUND</span>
+            </div>
+
+            {/* Demo role switcher */}
+            <div className="flex items-center gap-1.5 border border-warning/30 bg-warning/8 px-2 py-1">
+              <span className="hidden font-mono text-[8px] uppercase tracking-[0.12em] text-warning sm:inline">Demo:</span>
+              <select
+                value={demoRole}
+                onChange={(e) => {
+                  onDemoRoleChange(e.target.value as UserRole)
+                }}
+                className="cursor-pointer bg-transparent font-mono text-[9px] uppercase tracking-[0.1em] text-warning outline-none"
+                aria-label="Switch demo role"
+              >
+                {DEMO_ROLES.map((r) => (
+                  <option key={r.value} value={r.value} className="bg-navy text-slate-200 normal-case">
+                    {r.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <ThemeToggle theme={theme} onToggle={onToggleTheme} compact />
-            <StatusBadge tone={isLocal ? 'success' : 'warning'} compact>{isLocal ? 'Fully local' : 'Status unavailable'}</StatusBadge>
+
+            {/* User avatar */}
+            <button
+              onClick={onLogout}
+              title="Sign out"
+              className="flex size-8 items-center justify-center border border-line bg-panel font-mono text-[9px] uppercase tracking-wider text-muted hover:border-danger/40 hover:text-danger"
+              aria-label={`Signed in as ${user?.username || 'user'} — click to sign out`}
+            >
+              <Icon icon={Shield} size={13} />
+            </button>
           </div>
         </header>
-        <main className="flex-1 px-4 py-5 sm:px-6 sm:py-7 lg:px-8 lg:py-8">
-          <div className="mx-auto w-full max-w-[1500px]">{children}</div>
+
+        {/* ── Main content ───────────────────────────────────────────────── */}
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {children}
         </main>
       </div>
     </div>
