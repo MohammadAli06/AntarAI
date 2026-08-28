@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react'
-import { sendChat } from '../lib/api'
+import { useEffect, useRef, useState } from 'react'
+import { streamChat } from '../lib/api'
 import { getUser } from '../lib/auth'
 import type {
   AgentStep,
   Artifact,
-  ChatResponse,
   EvidenceSource,
   RiskLevel,
   SovereigntyStatus,
+  StepStatus,
+  StepType,
   Task,
   UploadedFile,
   VerificationResult,
@@ -18,12 +19,6 @@ import { AgentConsole } from '../features/workspace/ExecutionTrace'
 import { ArtifactPanel } from '../features/workspace/ArtifactPanel'
 import { TaskComposer } from '../features/workspace/TaskComposer'
 import { ProvenanceDrawer } from '../features/workspace/ProvenanceDrawer'
-import {
-  MOCK_ARTIFACTS,
-  MOCK_SOURCES,
-  MOCK_VERIFICATION,
-  makeMockSteps,
-} from '../lib/mockData'
 
 interface WorkspaceViewProps {
   outputs: import('../lib/types').OutputFile[]
@@ -35,15 +30,26 @@ interface WorkspaceViewProps {
   activeTemplate?: WorkflowTemplate | null
 }
 
-function stepifyResponse(response: ChatResponse): AgentStep[] {
-  // Map legacy string steps from /chat into AgentStep objects
-  return (response.steps || []).map((label, i) => ({
-    id: `step-${i}`,
-    stepIndex: i + 1,
-    type: 'model' as const,
-    label,
-    status: 'completed' as const,
-  }))
+// Backend stream event (loosely typed — the reducer switches on `type`).
+interface StreamEvent {
+  type: string
+  taskId?: string
+  stepId?: string
+  data?: Record<string, any>
+}
+
+// stepId → trace-card metadata
+const STEP_META: Record<string, { type: StepType; label: string }> = {
+  plan: { type: 'plan', label: 'Analyze request' },
+  route: { type: 'route', label: 'Route task to model' },
+  ocr: { type: 'ocr', label: 'Extract document text' },
+  knowledge: { type: 'knowledge', label: 'Retrieve relevant knowledge' },
+  model: { type: 'model', label: 'Generate response' },
+  'tool-doc': { type: 'tool', label: 'Generate document' },
+  'tool-sandbox': { type: 'tool', label: 'Execute code in sandbox' },
+  verification: { type: 'verification', label: 'Verify output' },
+  artifact: { type: 'artifact', label: 'Deliver artifacts' },
+  approval: { type: 'approval', label: 'Await approval' },
 }
 
 export function WorkspaceView({
@@ -56,7 +62,6 @@ export function WorkspaceView({
 }: WorkspaceViewProps) {
   const user = getUser()
 
-  // ── State ─────────────────────────────────────────────────────────────────
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
   const [prompt, setPromptState] = useState('')
   const [loading, setLoading] = useState(false)
@@ -69,18 +74,38 @@ export function WorkspaceView({
   const [risk] = useState<RiskLevel>('high')
   const [task, setTask] = useState<Partial<Task> | null>(null)
   const [provenanceOpen, setProvenanceOpen] = useState(false)
-  const [useMock, setUseMock] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
 
-  // ── Pre-fill from workflow template ──────────────────────────────────────
   useEffect(() => {
-    if (activeTemplate) {
-      setPromptState(activeTemplate.defaultPrompt)
-    }
+    if (activeTemplate) setPromptState(activeTemplate.defaultPrompt)
   }, [activeTemplate])
 
-  // ── Simulate SSE-driven mock execution ────────────────────────────────────
-  async function runMockTask(promptText: string) {
-    setUseMock(true)
+  // Upsert a trace step by stepId, merging patch fields.
+  function upsertStep(stepId: string, status: StepStatus, patch: Partial<AgentStep> = {}) {
+    setSteps((prev) => {
+      const idx = prev.findIndex((s) => s.id === stepId)
+      if (idx >= 0) {
+        const next = [...prev]
+        next[idx] = { ...next[idx], status, ...patch }
+        return next
+      }
+      const meta = STEP_META[stepId]
+      return [
+        ...prev,
+        {
+          id: stepId,
+          stepIndex: prev.length + 1,
+          type: meta?.type ?? 'plan',
+          label: meta?.label ?? stepId,
+          status,
+          ...patch,
+        },
+      ]
+    })
+  }
+
+  // Real streaming task via /chat/stream (SSE).
+  async function runRealStream(promptText: string, file?: File) {
     setLoading(true)
     setError('')
     setSteps([])
@@ -88,72 +113,136 @@ export function WorkspaceView({
     setArtifacts([])
     setVerification(undefined)
     setResponse('')
-
-    const mockSteps = makeMockSteps()
-    const taskId = `TASK-${Math.floor(1000 + Math.random() * 9000)}`
     setTask({
-      id: taskId,
+      id: 'TASK-…',
       title: promptText.slice(0, 60),
       ownerId: user?.username ?? 'engineer1',
       ownerName: user?.username ?? 'engineer1',
-      status: 'running',
+      status: 'planning',
       risk: 'high',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       workflowTemplate: activeTemplate ?? undefined,
     })
 
-    // Stream steps with delays for demo feel
-    for (let i = 0; i < mockSteps.length; i++) {
-      const step = mockSteps[i]
-      await new Promise((r) => setTimeout(r, 600 + Math.random() * 800))
-      setSteps((prev) => [...prev, { ...step, status: 'completed' as const }])
-      if (step.sources) setSources(step.sources)
-      if (step.verification) setVerification(step.verification)
-      if (step.artifact) setArtifacts((prev) => [...prev, step.artifact!])
-    }
+    const controller = new AbortController()
+    abortRef.current = controller
 
-    // Final
-    setSources(MOCK_SOURCES)
-    setVerification(MOCK_VERIFICATION)
-    setArtifacts(MOCK_ARTIFACTS)
-    setResponse(
-      `## Analysis Complete\n\nThe inspection report for Pump P-201 has been analyzed against MRPL-PUMP-SOP-042. Pump vibration exceeded acceptable range at 5.2 mm/s RMS (limit: 4.5 mm/s). Bearing temperature deviation noted at startup (+18°C above baseline).\n\nFindings are cross-referenced against 4 source documents. An approval note has been generated with executive summary, findings, and recommendations. SHA256 integrity verified.`
-    )
-    setTask((prev) => ({ ...prev, status: 'pending_approval' }))
-    setLoading(false)
-    onRefreshOutputs()
-    onRefreshSovereignty()
-  }
-
-  // ── Real task via /chat ───────────────────────────────────────────────────
-  async function runRealTask(promptText: string, file?: File) {
-    setUseMock(false)
-    setLoading(true)
-    setError('')
-    setSteps([])
-    setResponse('')
     try {
-      const res = await sendChat(promptText, file)
-      setResponse(res.response)
-      setSteps(stepifyResponse(res))
-      if (res.generatedFile) {
-        setArtifacts([{
-          id: 'art-real-1',
-          filename: res.generatedFile,
-          fileType: res.generatedFile.split('.').pop() ?? 'file',
-          sizeBytes: 0,
-          generatedLocally: true,
-          downloadUrl: `/outputs/${encodeURIComponent(res.generatedFile)}`,
-          createdAt: new Date().toISOString(),
-        }])
-      }
+      await streamChat(promptText, file, (raw) => {
+        const ev = raw as unknown as StreamEvent
+        const sid = ev.stepId
+        const d = ev.data ?? {}
+
+        switch (ev.type) {
+          case 'task.created':
+            setTask((prev) => ({ ...prev, id: ev.taskId ?? prev?.id }))
+            upsertStep('plan', 'completed', { durationMs: 1 })
+            break
+          case 'router.started':
+            upsertStep('route', 'running')
+            break
+          case 'router.completed':
+            upsertStep('route', 'completed', { modelRoute: d.modelRoute })
+            break
+          case 'ocr.started':
+            upsertStep('ocr', 'running')
+            break
+          case 'ocr.completed':
+            upsertStep('ocr', 'completed', { ocrResult: d.ocrResult })
+            break
+          case 'knowledge.started':
+            upsertStep('knowledge', 'running')
+            break
+          case 'knowledge.completed':
+            upsertStep('knowledge', 'completed', { sources: d.sources })
+            setSources(d.sources ?? [])
+            break
+          case 'model.started':
+            upsertStep('model', 'running', { detail: d.model })
+            break
+          case 'model.completed':
+            upsertStep('model', 'completed', { detail: d.detail })
+            setResponse(d.response ?? '')
+            break
+          case 'model.failed':
+            upsertStep('model', 'failed', { error: d.error })
+            break
+          case 'tool.started':
+            if (sid) upsertStep(sid, 'running')
+            break
+          case 'tool.completed':
+            if (sid) upsertStep(sid, 'completed', { toolRun: d.toolRun })
+            break
+          case 'tool.failed':
+            if (sid) upsertStep(sid, 'failed', { toolRun: d.toolRun, error: 'tool failed' })
+            break
+          case 'verification.started':
+            upsertStep('verification', 'running')
+            break
+          case 'verification.completed':
+            upsertStep('verification', 'completed', { verification: d.verification })
+            setVerification(d.verification)
+            break
+          case 'verification.failed':
+            upsertStep('verification', 'failed', { error: 'verification failed' })
+            break
+          case 'artifact.created': {
+            const art = d.artifact as Artifact | undefined
+            upsertStep('artifact', 'completed', { artifact: art })
+            if (art) {
+              setArtifacts((prev) => (prev.find((a) => a.id === art.id) ? prev : [...prev, art]))
+            }
+            break
+          }
+          case 'approval.required':
+            upsertStep('approval', 'completed')
+            setTask((prev) => ({
+              ...prev,
+              status: 'pending_approval',
+              requiresApproval: true,
+              risk: d.risk,
+              evidenceCount: d.evidenceCount,
+              approval: {
+                approvedBy: '',
+                approvedAt: '',
+                taskId: ev.taskId ?? '',
+                artifactHash: d.artifactSha256 ?? '',
+                modelRunId: d.modelRunId ?? '',
+                evidenceSetId: `EV-${ev.taskId ?? ''}-${d.evidenceCount ?? 0}`,
+              },
+            }))
+            break
+          case 'task.completed':
+            setTask((prev) => ({
+              ...prev,
+              id: ev.taskId ?? prev?.id,
+              status: d.status ?? 'completed',
+              risk: d.risk ?? prev?.risk,
+              evidenceCount: d.evidenceCount ?? prev?.evidenceCount,
+              modelRunId: d.modelRunId,
+            }))
+            if (d.response) setResponse(d.response)
+            break
+          case 'task.failed':
+            setTask((prev) => ({ ...prev, status: 'failed' }))
+            setError(d.error ? String(d.error) : 'Task failed')
+            if (d.response) setResponse(d.response)
+            break
+          default:
+            break
+        }
+      }, controller.signal)
+      setTask((prev) => ({ ...prev, status: prev?.status === 'failed' ? 'failed' : (prev?.status ?? 'completed') }))
       onRefreshOutputs()
       onRefreshSovereignty()
     } catch (err) {
+      if (controller.signal.aborted) return
       setError(err instanceof Error ? err.message : 'Task failed')
+      setTask((prev) => ({ ...prev, status: 'failed' }))
     } finally {
       setLoading(false)
+      abortRef.current = null
     }
   }
 
@@ -162,8 +251,7 @@ export function WorkspaceView({
     if (file) {
       setUploadedFiles((prev) => [...prev, { file, type: file.type.startsWith('image/') ? 'image' : 'pdf', ocrStatus: 'pending' }])
     }
-    // Try real backend first; fall back to mock demo
-    void runMockTask(promptText)
+    void runRealStream(promptText, file)
   }
 
   function removeFile(index: number) {
@@ -258,7 +346,6 @@ export function WorkspaceView({
         sources={sources}
         artifacts={artifacts}
         verification={verification}
-        usedMock={useMock}
       />
     </div>
   )

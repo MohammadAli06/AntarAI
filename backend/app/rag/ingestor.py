@@ -124,6 +124,60 @@ def query_documents(query: str, n_results: int = 3) -> list[str]:
         return []
 
 
+def retrieve_sources(query: str, n_results: int = 3) -> list[dict]:
+    """Retrieve top-k chunks with metadata, shaped as EvidenceSource dicts.
+
+    Returns [] if ChromaDB is unavailable or the collection is empty — the
+    orchestrator treats an empty list as "no grounding" rather than crashing.
+    """
+    if not _init_chroma() or _collection is None:
+        return []
+    try:
+        count = _collection.count()
+        if count == 0:
+            return []
+        results = _collection.query(
+            query_texts=[query],
+            n_results=min(n_results, count),
+        )
+    except Exception as exc:
+        logger.warning("ChromaDB query failed: %s", exc)
+        return []
+
+    docs = results.get("documents", [[]])[0]
+    metas = results.get("metadatas", [[]])[0]
+    dists = results.get("distances", [[]])[0]
+
+    sources: list[dict] = []
+    for i, chunk in enumerate(docs):
+        meta = metas[i] if i < len(metas) else {}
+        dist = dists[i] if i < len(dists) else 1.0
+        filename = meta.get("filename", "knowledge")
+        relevance = max(0.0, min(1.0, 1.0 - float(dist)))
+        sources.append({
+            "id": f"src-{i + 1}",
+            "title": Path(filename).stem if filename else "knowledge",
+            "section": f"chunk {meta.get('chunk', i)}",
+            "relevanceScore": round(relevance, 2),
+            "excerpt": (chunk or "")[:200],
+            "sourceType": _infer_source_type(filename),
+        })
+    return sources
+
+
+def _infer_source_type(filename: str) -> str:
+    name = (filename or "").lower()
+    if "sop" in name:
+        return "sop"
+    if "manual" in name:
+        return "manual"
+    if "standard" in name or "is-" in name or "astm" in name:
+        return "standard"
+    if "previous" in name or "approval" in name:
+        return "previous-task"
+    return "document"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

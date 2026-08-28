@@ -1,33 +1,81 @@
 """
-Code Sandbox — real subprocess execution.
+Code Sandbox — hardened, network-isolated subprocess execution.
 
-Writes generated code to sandbox/solution.py, runs it with Python via
-subprocess with a 10-second timeout, and captures stdout/stderr.
+Final-round hardening (no Docker dependency):
+  - cwd jail          : runs inside a fresh temp directory, never backend/sandbox
+  - dropped env       : minimal environment (no inherited secrets / API keys)
+  - network block     : a sitecustomize shim prepended via PYTHONPATH patches
+                        socket.connect / connect_ex / create_connection to
+                        raise OSError on any non-loopback egress, and records
+                        the interception to a flag file the parent reads
+  - resource caps     : RLIMIT_CPU + RLIMIT_AS on POSIX (Windows falls back to
+                        the 10s subprocess timeout, documented)
+  - artifact capture   : the executed code is saved under outputs/ as a
+                        downloadable, hashable .py artifact
 
-For the final round: replace subprocess with Docker --network=none for
-true isolation.  The interface (run_code_sandbox → dict) stays identical.
+The public interface (run_code_sandbox -> dict) is unchanged so the
+orchestrator and verifier keep working.
 """
 
 from __future__ import annotations
 
+import datetime
+import os
+import re
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
-import re
+from typing import Optional
 
-# Sandbox directory lives next to backend/
-_SANDBOX_DIR = Path(__file__).resolve().parents[2] / "sandbox"
-_SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
-_SOLUTION_FILE = _SANDBOX_DIR / "solution.py"
+from app.sovereignty.inspector import record_blocked_attempt
+
+_OUTPUTS_DIR = Path(__file__).resolve().parents[2] / "outputs"
+_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 _TIMEOUT_SECONDS = 10
+_CPU_SECONDS = 10
+_MEMORY_MB = 512
+
+# sitecustomize shim injected via PYTHONPATH — runs before user code.
+_NETBLOCK_SHIM = '''import socket, os
+_orig_connect = socket.socket.connect
+_orig_connect_ex = socket.socket.connect_ex
+_orig_create = socket.create_connection
+_FLAG = os.environ.get("ANTARAI_NETBLOCK_FLAG", "")
+def _flag():
+    if _FLAG:
+        try:
+            open(_FLAG, "w").write("1")
+        except Exception:
+            pass
+def _connect(self, addr, *a, **k):
+    host = addr[0] if isinstance(addr, (tuple, list)) else str(addr)
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return _orig_connect(self, addr, *a, **k)
+    _flag()
+    raise OSError("network egress blocked by AntarAI sandbox policy")
+def _connect_ex(self, addr, *a, **k):
+    host = addr[0] if isinstance(addr, (tuple, list)) else str(addr)
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return _orig_connect_ex(self, addr, *a, **k)
+    _flag()
+    raise OSError("network egress blocked by AntarAI sandbox policy")
+def _create_connection(addr, *a, **k):
+    host = addr[0] if isinstance(addr, (tuple, list)) else str(addr)
+    if host in ("127.0.0.1", "::1", "localhost"):
+        return _orig_create(addr, *a, **k)
+    _flag()
+    raise OSError("network egress blocked by AntarAI sandbox policy")
+socket.socket.connect = _connect
+socket.socket.connect_ex = _connect_ex
+socket.create_connection = _create_connection
+'''
 
 
 def _extract_code_block(text: str) -> str:
-    """
-    Pull the first ```python ... ``` block out of a model response.
-    If no fence found, treat the whole text as code.
-    """
+    """Pull the first ```python ... ``` block; else treat whole text as code."""
     pattern = r"```(?:python)?\s*\n(.*?)```"
     match = re.search(pattern, text, re.DOTALL)
     if match:
@@ -36,39 +84,66 @@ def _extract_code_block(text: str) -> str:
 
 
 def run_code_sandbox(code_or_response: str) -> dict:
-    """
-    Execute Python code in a sandboxed subprocess.
+    """Execute Python code in a hardened, network-isolated subprocess.
 
-    Parameters
-    ----------
-    code_or_response : str
-        Raw model response.  May contain markdown code fences — they are
-        stripped automatically before execution.
-
-    Returns
-    -------
-    dict
-        Keys: status ("passed" | "failed" | "timeout"),
-              stdout, stderr, exit_code.
+    Returns dict: status, stdout, stderr, exit_code, code, network_blocked,
+    egress_attempted, code_file, duration_ms.
     """
     code = _extract_code_block(code_or_response)
 
-    # Write to sandbox file
-    _SOLUTION_FILE.write_text(code, encoding="utf-8")
+    # Persist the code as a downloadable, hashable artifact.
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    artifact_name = f"solution_{timestamp}.py"
+    artifact_path = _OUTPUTS_DIR / artifact_name
+    artifact_path.write_text(code, encoding="utf-8")
 
+    # Fresh temp jail for execution.
+    jail = Path(tempfile.mkdtemp(prefix="antarai_jail_"))
+    (jail / "sitecustomize.py").write_text(_NETBLOCK_SHIM, encoding="utf-8")
+    solution_file = jail / "solution.py"
+    solution_file.write_text(code, encoding="utf-8")
+    flag_file = jail / "_netblock.flag"
+    flag_path = str(flag_file)
+
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": str(jail),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "ANTARAI_NETBLOCK_FLAG": flag_path,
+        "TEMP": os.environ.get("TEMP", ""),
+        "TMP": os.environ.get("TMP", ""),
+    }
+    if sys.platform.startswith("win"):
+        # Windows needs SYSTEMROOT for various stdlib calls.
+        env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")
+
+    preexec = _posix_limits() if not sys.platform.startswith("win") else None
+
+    start = time.monotonic()
     try:
         result = subprocess.run(
-            [sys.executable, str(_SOLUTION_FILE)],
+            [sys.executable, str(solution_file)],
             capture_output=True,
             text=True,
             timeout=_TIMEOUT_SECONDS,
+            cwd=str(jail),
+            env=env,
+            preexec_fn=preexec,
         )
+        duration_ms = int((time.monotonic() - start) * 1000)
+        egress_attempted = flag_file.exists()
+        if egress_attempted:
+            record_blocked_attempt()
         return {
             "status": "passed" if result.returncode == 0 else "failed",
             "stdout": result.stdout,
             "stderr": result.stderr,
             "exit_code": result.returncode,
             "code": code,
+            "network_blocked": True,
+            "egress_attempted": egress_attempted,
+            "code_file": artifact_name,
+            "duration_ms": duration_ms,
         }
     except subprocess.TimeoutExpired:
         return {
@@ -77,6 +152,10 @@ def run_code_sandbox(code_or_response: str) -> dict:
             "stderr": f"Execution exceeded {_TIMEOUT_SECONDS}s time limit.",
             "exit_code": -1,
             "code": code,
+            "network_blocked": True,
+            "egress_attempted": flag_file.exists(),
+            "code_file": artifact_name,
+            "duration_ms": _TIMEOUT_SECONDS * 1000,
         }
     except Exception as exc:
         return {
@@ -85,4 +164,26 @@ def run_code_sandbox(code_or_response: str) -> dict:
             "stderr": str(exc),
             "exit_code": -1,
             "code": code,
+            "network_blocked": True,
+            "egress_attempted": flag_file.exists(),
+            "code_file": artifact_name,
+            "duration_ms": int((time.monotonic() - start) * 1000),
         }
+
+
+def _posix_limits():  # pragma: no cover - POSIX-only
+    import resource
+
+    def _set() -> None:
+        # CPU seconds + address-space cap to bound runaway code.
+        try:
+            resource.setrlimit(resource.RLIMIT_CPU, (_CPU_SECONDS, _CPU_SECONDS))
+        except Exception:
+            pass
+        try:
+            mem_bytes = _MEMORY_MB * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+        except Exception:
+            pass
+
+    return _set

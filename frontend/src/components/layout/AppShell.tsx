@@ -22,6 +22,8 @@ interface AppShellProps {
   onCloseMobile: () => void
   demoRole: UserRole
   onDemoRoleChange: (role: UserRole) => void
+  demoMode: boolean
+  switching?: boolean
 }
 
 const DEMO_ROLES: { value: UserRole; label: string }[] = [
@@ -46,6 +48,8 @@ export function AppShell({
   onCloseMobile,
   demoRole,
   onDemoRoleChange,
+  demoMode,
+  switching,
 }: AppShellProps) {
   const user = getUser()
   const isAirGapped = sovereignty?.online !== false && sovereignty?.externalCalls === 0
@@ -97,30 +101,31 @@ export function AppShell({
               <span className="font-mono text-[9px] text-muted">GPU 63%</span>
             </div>
 
-            {/* Outbound counter */}
+            {/* Outbound counter — real measured value from sovereignty status */}
             <div className="hidden items-center gap-1 border border-line px-2 py-1 xl:flex">
-              <span className="font-mono text-[9px] text-signal">0</span>
+              <span className="font-mono text-[9px] text-signal">{sovereignty?.externalCalls ?? 0}</span>
               <span className="font-mono text-[9px] text-slate-600">OUTBOUND</span>
             </div>
 
-            {/* Demo role switcher */}
-            <div className="flex items-center gap-1.5 border border-warning/30 bg-warning/8 px-2 py-1">
-              <span className="hidden font-mono text-[8px] uppercase tracking-[0.12em] text-warning sm:inline">Demo:</span>
-              <select
-                value={demoRole}
-                onChange={(e) => {
-                  onDemoRoleChange(e.target.value as UserRole)
-                }}
-                className="cursor-pointer bg-transparent font-mono text-[9px] uppercase tracking-[0.1em] text-warning outline-none"
-                aria-label="Switch demo role"
-              >
-                {DEMO_ROLES.map((r) => (
-                  <option key={r.value} value={r.value} className="bg-navy text-slate-200 normal-case">
-                    {r.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Demo role switcher — server-verified, hidden when demo mode is off */}
+            {demoMode && (
+              <div className="flex items-center gap-1.5 border border-warning/30 bg-warning/8 px-2 py-1">
+                <span className="hidden font-mono text-[8px] uppercase tracking-[0.12em] text-warning sm:inline">Demo:</span>
+                <select
+                  value={demoRole}
+                  onChange={(e) => onDemoRoleChange(e.target.value as UserRole)}
+                  disabled={switching}
+                  className="cursor-pointer bg-transparent font-mono text-[9px] uppercase tracking-[0.1em] text-warning outline-none disabled:opacity-50"
+                  aria-label="Switch demo role (server-verified)"
+                >
+                  {DEMO_ROLES.map((r) => (
+                    <option key={r.value} value={r.value} className="bg-navy text-slate-200 normal-case">
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             <ThemeToggle theme={theme} onToggle={onToggleTheme} compact />
 

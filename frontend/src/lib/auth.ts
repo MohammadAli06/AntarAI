@@ -13,6 +13,7 @@ const USER_KEY  = 'antar_ai_user'
 export interface AuthUser {
   username: string
   role: string
+  demo?: boolean
 }
 
 // ---------------------------------------------------------------------------

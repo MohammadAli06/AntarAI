@@ -1,16 +1,24 @@
 """
 Authentication — JWT-based auth for the AntarAI workbench.
 
-Design choices (hackathon-grade):
-  • bcrypt password hashing via passlib
-  • HS256 JWT tokens via python-jose
-  • 8-hour token expiry, no refresh tokens
-  • Single get_current_user() dependency protects all sensitive routes
+Design (final-round hardening):
+  - bcrypt password hashing
+  - HS256 JWT tokens via python-jose, 8-hour expiry
+  - Role is sourced from the SIGNED JWT claim (not the DB column), so a
+    server-issued demo-scoped token is authoritative — a client cannot
+    self-promote by editing local state because every privileged call is
+    validated against the signed token by require_role()
+  - DEMO_MODE (default ON for the final) gates the role-switch endpoint
+
+The dependency get_current_user() returns a Principal (username, id, role,
+demo) rather than the ORM User, so the authoritative role always comes from
+the signed token.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -27,22 +35,24 @@ from app.database import User, get_db
 # Config
 # ---------------------------------------------------------------------------
 
-# In production: read from env / secrets vault — never hardcode
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "antar-ai-sovereign-jwt-secret-key-2026-mrpl")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 8
-
-# ---------------------------------------------------------------------------
-# Password hashing (Direct bcrypt usage)
-# ---------------------------------------------------------------------------
+DEMO_TOKEN_EXPIRE_HOURS = 2
+DEMO_MODE = os.getenv("DEMO_MODE", "1") == "1"
+VALID_ROLES = {"engineer", "approver", "admin"}
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+# ---------------------------------------------------------------------------
+# Password hashing
+# ---------------------------------------------------------------------------
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(
         plain_password.encode("utf-8"),
-        hashed_password.encode("utf-8") if isinstance(hashed_password, str) else hashed_password
+        hashed_password.encode("utf-8") if isinstance(hashed_password, str) else hashed_password,
     )
 
 
@@ -53,33 +63,15 @@ def hash_password(password: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Config
+# Principal — the authenticated subject (role from the signed token)
 # ---------------------------------------------------------------------------
 
-# In production: read from env / secrets vault — never hardcode
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "antar-ai-sovereign-jwt-secret-key-2026-mrpl")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 8
-
-# ---------------------------------------------------------------------------
-# Password hashing (Direct bcrypt to avoid passlib+bcrypt 4.x version bug)
-# ---------------------------------------------------------------------------
-
-bearer_scheme = HTTPBearer(auto_error=False)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(
-        plain_password.encode("utf-8"),
-        hashed_password.encode("utf-8") if isinstance(hashed_password, str) else hashed_password
-    )
-
-
-def hash_password(password: str) -> str:
-    pwd_bytes = password.encode("utf-8")
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(pwd_bytes, salt).decode("utf-8")
-
+@dataclass
+class Principal:
+    username: str
+    id: int            # the user's DB id (existing endpoints use current_user.id)
+    role: str          # authoritative, from the signed JWT claim
+    demo: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -91,17 +83,39 @@ class TokenPayload(BaseModel):
     role: str
     user_id: int
     exp: Optional[datetime] = None
+    demo: Optional[bool] = False
 
 
-def create_access_token(username: str, role: str, user_id: int) -> str:
-    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+def create_access_token(username: str, role: str, user_id: int, demo: bool = False,
+                        expire_hours: Optional[int] = None) -> str:
+    hours = expire_hours if expire_hours is not None else (
+        DEMO_TOKEN_EXPIRE_HOURS if demo else ACCESS_TOKEN_EXPIRE_HOURS
+    )
+    expire = datetime.utcnow() + timedelta(hours=hours)
     payload = {
         "sub": username,
         "role": role,
         "user_id": user_id,
         "exp": expire,
+        "demo": demo,
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_demo_token(user: User, requested_role: str) -> str:
+    """Mint a short-lived, demo-scoped token carrying the requested role.
+
+    Does NOT mutate the persisted User.role — the elevation lives only in the
+    signed, short-lived token. require_role() and get_current_user() honour it.
+    """
+    if requested_role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role: {requested_role}")
+    return create_access_token(
+        username=user.username,
+        role=requested_role,
+        user_id=user.id,
+        demo=True,
+    )
 
 
 def decode_token(token: str) -> TokenPayload:
@@ -123,11 +137,9 @@ def decode_token(token: str) -> TokenPayload:
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: Session = Depends(get_db),
-) -> User:
-    """
-    FastAPI dependency.  Validates the Bearer JWT and returns the User ORM object.
-    Attach with:   current_user: User = Depends(get_current_user)
-    """
+) -> Principal:
+    """Validate the Bearer JWT and return a Principal whose role is the signed
+    token's role claim (authoritative)."""
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -145,17 +157,21 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    return user
+    return Principal(
+        username=user.username,
+        id=user.id,
+        role=payload.role,          # authoritative — from the signed token
+        demo=bool(payload.demo),
+    )
 
 
 def require_role(allowed_roles: list[str]):
-    """
-    Dependency generator for Role-Based Access Control (RBAC).
+    """Dependency generator for Role-Based Access Control.
 
-    Usage:
-        @app.get("/admin-only", dependencies=[Depends(require_role(["admin"]))])
+    The role checked here is the signed-token role, so demo-scoped tokens
+    are honoured server-side and client-side tampering cannot bypass it.
     """
-    def role_checker(current_user: User = Depends(get_current_user)) -> User:
+    def role_checker(current_user: Principal = Depends(get_current_user)) -> Principal:
         if current_user.role not in allowed_roles:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -164,4 +180,3 @@ def require_role(allowed_roles: list[str]):
         return current_user
 
     return role_checker
-

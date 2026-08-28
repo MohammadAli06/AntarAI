@@ -1,0 +1,54 @@
+# AntarAI Governance Policies
+#
+# Risk classification + approval thresholds for the sovereign workbench.
+# Consumed by GET /policies (admin) and by the orchestrator to decide
+# whether a generated artifact requires human approval.
+
+# Risk classification rules — first match wins, evaluated top-to-bottom.
+risk_rules:
+  - id: R-001
+    name: Code execution task
+    risk: medium
+    when: "task_type == 'coder'"
+    rationale: "Generated code is executed in the local sandbox; outputs are reproducible."
+
+  - id: R-002
+    name: Document intelligence / OCR
+    risk: low
+    when: "task_type == 'vision' and not generates_file"
+    rationale: "Extraction and summary only — no authoritative artifact produced."
+
+  - id: R-003
+    name: Formal approval note / deliverable
+    risk: high
+    when: "generates_file == true"
+    rationale: "Authoritative engineering document requiring supervisor sign-off before use."
+
+  - id: R-004
+    name: Default / general reasoning
+    risk: low
+    when: "otherwise"
+    rationale: "Conversational response, no binding artifact."
+
+# Approval thresholds — who must approve, and when auto-approval is allowed.
+approval_thresholds:
+  auto_approve:
+    enabled: true
+    max_risk: low
+    min_confidence: 0.90
+    requires_all_checks_passed: true
+  high_risk:
+    requires_role: [approver, admin]
+    requires_artifact_hash: true
+    requires_evidence: true
+    min_evidence_sources: 1
+
+# Sovereignty enforcement — non-negotiable runtime constraints.
+sovereignty:
+  external_network: blocked
+  permitted_local_endpoints: ["127.0.0.1:8081"]   # llama.cpp only
+  sandbox:
+    network: blocked
+    cpu_seconds: 10
+    memory_mb: 512
+  data_residency: on-premise

@@ -17,8 +17,10 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
+    Text,
     create_engine,
     func,
+    inspect,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -63,6 +65,14 @@ class Task(Base):
     generated_file = Column(String, nullable=True)    # generated output filename
     status = Column(String, default="pending_approval") # draft / pending_approval / approved / rejected
     timestamp = Column(DateTime, default=datetime.utcnow)
+    # Provenance + verification (added by non-destructive migration)
+    risk = Column(String, nullable=True)             # low / medium / high / critical
+    evidence_count = Column(Integer, nullable=True)
+    artifact_sha256 = Column(String, nullable=True)
+    model_run_id = Column(String, nullable=True)
+    verification_json = Column(Text, nullable=True)
+    approved_by = Column(String, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
 
 
 class Document(Base):
@@ -82,8 +92,42 @@ class Document(Base):
 # ---------------------------------------------------------------------------
 
 def create_tables() -> None:
-    """Create all tables if they don't already exist."""
+    """Create all tables if they don't already exist, then add any new
+    provenance/verification columns to the tasks table via ALTER TABLE
+    (non-destructive — preserves existing rows)."""
     Base.metadata.create_all(bind=engine)
+    _migrate_task_columns()
+
+
+def _migrate_task_columns() -> None:
+    """Add new nullable columns to an existing tasks table in place.
+
+    create_all won't alter an existing table, so we ALTER missing columns.
+    All new columns are nullable so old rows and old code keep working.
+    """
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("tasks"):
+            return
+        existing = {c["name"] for c in insp.get_columns("tasks")}
+        # (column_name, sqlite_type)
+        additions = [
+            ("risk", "TEXT"),
+            ("evidence_count", "INTEGER"),
+            ("artifact_sha256", "TEXT"),
+            ("model_run_id", "TEXT"),
+            ("verification_json", "TEXT"),
+            ("approved_by", "TEXT"),
+            ("approved_at", "DATETIME"),
+        ]
+        with engine.begin() as conn:
+            from sqlalchemy import text
+            for col, col_type in additions:
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col} {col_type}"))
+    except Exception:
+        # Best-effort migration — don't crash startup.
+        pass
 
 
 def get_db():

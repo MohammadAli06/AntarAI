@@ -1,13 +1,27 @@
 import { useCallback, useEffect, useState } from 'react'
-import { fetchModels, fetchOutputs, fetchSovereigntyStatus } from '../lib/api'
+import {
+  fetchMe,
+  fetchModels,
+  fetchOutputs,
+  fetchPolicies,
+  fetchSovereigntyStatus,
+  fetchTools,
+  fetchUsers,
+  switchDemoRole,
+} from '../lib/api'
+import type { ToolInfo, UserInfo } from '../lib/api'
 import { AppShell } from '../components/layout/AppShell'
 import { WorkspaceView } from './WorkspaceView'
 import { ApprovalsView } from './ApprovalsView'
 import { KnowledgeBaseView } from './KnowledgeBaseView'
 import { SovereigntyMonitorView } from './SovereigntyMonitorView'
 import { ModelsView } from './ModelsView'
+import { ToolsView } from './ToolsView'
+import { UsersView } from './UsersView'
+import { PoliciesView } from './PoliciesView'
 import { HomeDashboard } from '../features/home/HomeDashboard'
-import { getUser } from '../lib/auth'
+import { getUser, setToken, setUser } from '../lib/auth'
+import { PermissionGate } from '../lib/permissions'
 import type {
   ApiErrorState,
   ModelInfo,
@@ -25,38 +39,63 @@ interface WorkbenchAppProps {
   onToggleTheme: () => void
 }
 
-// Stub views for admin-only pages that aren't fully built yet
-function StubView({ title, description }: { title: string; description: string }) {
+function ForbiddenView({ title }: { title: string }) {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="text-center space-y-2">
-        <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-slate-600">Coming soon</div>
+        <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-danger">Access denied</div>
         <h2 className="text-lg font-semibold text-slate-200">{title}</h2>
-        <p className="text-xs text-muted max-w-sm">{description}</p>
+        <p className="text-xs text-muted max-w-sm">Your signed role does not permit this view. Switch role (demo) or sign in as an admin.</p>
       </div>
     </div>
   )
 }
 
 export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppProps) {
-  const user = getUser()
-  const initialRole = (user?.role as UserRole) || 'engineer'
+  const stored = getUser()
+  const [role, setRole] = useState<UserRole>((stored?.role as UserRole) || 'engineer')
+  const [demoMode, setDemoMode] = useState(true)
+  const [switching, setSwitching] = useState(false)
 
-  const [demoRole, setDemoRole] = useState<UserRole>(initialRole)
   const [activeView, setActiveView] = useState<ViewId>('home')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [outputs, setOutputs] = useState<OutputFile[]>([])
   const [models, setModels] = useState<ModelInfo[]>([])
+  const [tools, setTools] = useState<ToolInfo[]>([])
+  const [users, setUsers] = useState<UserInfo[]>([])
+  const [policies, setPolicies] = useState<Record<string, unknown>>({})
   const [sovereignty, setSovereignty] = useState<SovereigntyStatus | null>(null)
-  const [loading, setLoading] = useState({ outputs: true, models: true, sovereignty: true })
+  const [loading, setLoading] = useState({ outputs: true, models: true, sovereignty: true, tools: true, users: true, policies: true })
   const [errors, setErrors] = useState<ApiErrorState[]>([])
   const [activeTemplate, setActiveTemplate] = useState<WorkflowTemplate | null>(null)
 
-  // When demo role changes, navigate to role's default home view
-  function handleDemoRoleChange(role: UserRole) {
-    setDemoRole(role)
-    setActiveView('home')
+  // Sync the authoritative (signed-token) role + demo flag from the server.
+  useEffect(() => {
+    fetchMe()
+      .then((me) => {
+        setRole(me.role as UserRole)
+        setDemoMode(me.demoMode)
+        setUser({ username: me.username, role: me.role, demo: me.demo })
+      })
+      .catch(() => { /* 401 handled globally */ })
+  }, [])
+
+  // Demo role switch — server re-issues a signed, demo-scoped token.
+  async function handleDemoRoleChange(newRole: UserRole) {
+    if (newRole === role) return
+    setSwitching(true)
+    try {
+      const res = await switchDemoRole(newRole)
+      setToken(res.access_token)
+      setUser({ username: res.username, role: res.role, demo: true })
+      setRole(res.role as UserRole)
+      setActiveView('home')
+    } catch (err) {
+      setErrors((c) => [...c, { scope: 'tasks', message: err instanceof Error ? err.message : 'Role switch failed' }])
+    } finally {
+      setSwitching(false)
+    }
   }
 
   const loadOutputs = useCallback(async () => {
@@ -91,6 +130,18 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
         .then(setModels)
         .catch((err) => setErrors((c) => [...c, { scope: 'models', message: err instanceof Error ? err.message : 'Models unavailable' }]))
         .finally(() => setLoading((c) => ({ ...c, models: false }))),
+      fetchTools()
+        .then(setTools)
+        .catch(() => { /* non-admin or unavailable */ })
+        .finally(() => setLoading((c) => ({ ...c, tools: false }))),
+      fetchUsers()
+        .then(setUsers)
+        .catch(() => { /* 403 for non-admin — expected */ })
+        .finally(() => setLoading((c) => ({ ...c, users: false }))),
+      fetchPolicies()
+        .then(setPolicies)
+        .catch(() => { /* 403 for non-admin — expected */ })
+        .finally(() => setLoading((c) => ({ ...c, policies: false }))),
     ])
   }, [loadOutputs, loadSovereignty])
 
@@ -106,7 +157,7 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
       case 'admin-overview':
         return (
           <HomeDashboard
-            role={demoRole}
+            role={role}
             onNavigate={setActiveView}
             sovereignty={sovereignty}
             onStartWorkflow={handleStartWorkflow}
@@ -149,60 +200,31 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
           />
         )
 
-      case 'my-tasks':
-        return (
-          <StubView
-            title="My Tasks"
-            description="View all tasks you have created — running, verifying, completed, pending approval."
-          />
-        )
-
-      case 'deliverables':
-      case 'approved-outputs':
-        return (
-          <StubView
-            title="Deliverables"
-            description="Browse all AI-generated deliverables: Word documents, Excel reports, code files, and presentations."
-          />
-        )
-
-      case 'audit-history':
-      case 'audit-logs':
-        return (
-          <StubView
-            title="Audit Log"
-            description="Full audit trail of all tasks, approvals, model invocations, and sovereignty events."
-          />
-        )
-
       case 'tools':
         return (
-          <StubView
-            title="Tool Registry"
-            description="Manage local tools: Python Sandbox, OCR Engine, Document Generator, Excel, PPT."
-          />
+          <PermissionGate permission="model:read" fallback={<ForbiddenView title="Tool Registry" />}>
+            <ToolsView tools={tools} loading={loading.tools} />
+          </PermissionGate>
         )
 
       case 'users':
         return (
-          <StubView
-            title="Users & Roles"
-            description="Manage users, assign roles (Engineer / Approver / Admin), and configure permissions."
-          />
+          <PermissionGate permission="user:manage" fallback={<ForbiddenView title="Users & Roles" />}>
+            <UsersView users={users} loading={loading.users} />
+          </PermissionGate>
         )
 
       case 'policies':
         return (
-          <StubView
-            title="Policies"
-            description="Define risk classification rules, approval thresholds, and governance policies."
-          />
+          <PermissionGate permission="admin:access" fallback={<ForbiddenView title="Policies" />}>
+            <PoliciesView policies={policies} loading={loading.policies} />
+          </PermissionGate>
         )
 
       default:
         return (
           <HomeDashboard
-            role={demoRole}
+            role={role}
             onNavigate={setActiveView}
             sovereignty={sovereignty}
             onStartWorkflow={handleStartWorkflow}
@@ -225,8 +247,10 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
       mobileOpen={mobileOpen}
       onToggleMobile={() => setMobileOpen((v) => !v)}
       onCloseMobile={() => setMobileOpen(false)}
-      demoRole={demoRole}
+      demoRole={role}
       onDemoRoleChange={handleDemoRoleChange}
+      demoMode={demoMode}
+      switching={switching}
     >
       {renderView()}
     </AppShell>

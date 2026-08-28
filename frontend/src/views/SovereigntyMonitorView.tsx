@@ -58,6 +58,16 @@ export function SovereigntyMonitorView({ status, onStatusChange }: SovereigntyMo
 
   const isAirGapped = status?.online !== false && (status?.externalCalls ?? 0) === 0
 
+  // Real local services + model integrity from the backend, with static fallback.
+  const services =
+    status?.localServices && status.localServices.length > 0
+      ? status.localServices.map((s) => ({ address: s.address, name: s.name, online: s.online ?? true }))
+      : LOCAL_SERVICES.map((s) => ({ address: s.address, name: s.name, online: true }))
+  const integrity =
+    status?.modelIntegrity && status.modelIntegrity.length > 0
+      ? status.modelIntegrity.map((m) => ({ file: m.modelFile, model: m.modelFile, sha256: m.sha256, verified: m.verified }))
+      : MODEL_INTEGRITY.map((m) => ({ file: m.file, model: m.model, sha256: '', verified: m.verified }))
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="space-y-5 p-6 max-w-4xl">
@@ -117,10 +127,10 @@ export function SovereigntyMonitorView({ status, onStatusChange }: SovereigntyMo
             Active Local Services
           </div>
           <div className="border border-line bg-panel/40 divide-y divide-line/40">
-            {LOCAL_SERVICES.map((svc) => (
+            {services.map((svc) => (
               <div key={svc.address} className="flex items-center justify-between px-4 py-2.5 text-xs">
                 <div className="flex items-center gap-2">
-                  <span className="size-1.5 rounded-full bg-signal shrink-0" />
+                  <span className={`size-1.5 rounded-full shrink-0 ${svc.online ? 'bg-signal' : 'bg-danger'}`} />
                   <span className="font-mono text-[10px] text-signal">{svc.address}</span>
                 </div>
                 <span className="text-muted">{svc.name}</span>

@@ -19,3 +19,5 @@ PyPDF2==3.0.1
 # RAG / Vector store
 chromadb==1.5.9
 sentence-transformers==6.0.0
+# Sovereignty inspection (real socket + process metrics)
+psutil==6.1.0
