@@ -471,6 +471,14 @@ def _build_prompt(
         ),
     }
     system = system_prompts.get(role, system_prompts["general"])
+    document_request = any(keyword in message.lower() for keyword in _DOC_KEYWORDS)
+    if document_request:
+        system += (
+            " The user has requested a DOCX deliverable. Write the finished report content itself, "
+            "not Python code, a plan, or sample data. Use the retrieved organizational knowledge as the "
+            "factual basis; do not invent statistics or operational facts. If no relevant source is supplied, "
+            "say that the requested facts are unavailable rather than fabricating them."
+        )
 
     user_parts = []
     if filename:
