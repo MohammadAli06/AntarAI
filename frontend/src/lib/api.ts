@@ -38,6 +38,22 @@ interface RawModel {
   quantization?: string
   vram_gb?: number
   context_tokens?: number
+  model_path?: string
+  architecture?: string
+  parameter_count?: string
+  file_size_bytes?: number
+  tensor_count?: number
+  model_context_tokens?: number
+  estimated_vram_gb?: number
+  runtime_context_tokens?: number
+  load_policy?: string
+  priority?: number
+  gpu_node?: string
+  enabled?: boolean
+  gpu_name?: string | null
+  gpu_vram_gb?: number | null
+  metadata_status?: string
+  inspection_error?: string | null
   capabilities?: string[]
   active?: boolean
 }
@@ -216,6 +232,22 @@ export async function fetchModels(): Promise<ModelInfo[]> {
     vramGb: model.vram_gb,
     contextLength: model.context_tokens,
     capabilities: model.capabilities,
+    modelPath: model.model_path,
+    architecture: model.architecture,
+    parameterCount: model.parameter_count,
+    fileSizeBytes: model.file_size_bytes,
+    tensorCount: model.tensor_count,
+    modelContextLength: model.model_context_tokens,
+    estimatedVramGb: model.estimated_vram_gb,
+    runtimeContextLength: model.runtime_context_tokens,
+    loadPolicy: model.load_policy,
+    priority: model.priority,
+    gpuNode: model.gpu_node,
+    enabled: model.enabled,
+    gpuName: model.gpu_name,
+    gpuVramGb: model.gpu_vram_gb,
+    metadataStatus: model.metadata_status,
+    inspectionError: model.inspection_error,
   }))
 }
 
@@ -390,6 +422,8 @@ export interface ToolInfo {
   description?: string
   enabled?: boolean
   seeded?: boolean
+  lastToggledBy?: string | null
+  lastToggledAt?: string | null
 }
 
 export interface UserInfo {
@@ -420,23 +454,60 @@ export async function fetchTools(): Promise<ToolInfo[]> {
 
 export interface ModelEntryInput {
   role: string
-  name: string
   endpoint: string
+  model_path: string
   model_id?: string
-  format?: string
-  quantization?: string
-  vram_gb?: number
-  context_tokens?: number
   capabilities?: string[]
   description?: string
+  runtime_context_tokens?: number
+  load_policy?: string
+  priority?: number
+  gpu_node?: string
+  enabled?: boolean
+}
+
+export interface ModelFileInfo {
+  path: string
+  metadata?: {
+    name?: string
+    format?: string
+    quantization?: string
+    architecture?: string
+    parameter_count?: string
+    model_context_tokens?: number
+    file_size_bytes?: number
+    tensor_count?: number
+    estimated_vram_gb?: number
+  }
+  error?: string
 }
 
 export async function addModel(entry: ModelEntryInput): Promise<void> {
   await request('/admin/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry) })
 }
 
+export async function fetchLocalModelFiles(): Promise<ModelFileInfo[]> {
+  const raw = await request<{ files?: ModelFileInfo[] }>('/admin/models/files')
+  return raw.files ?? []
+}
+
+export async function inspectLocalModelFile(modelPath: string): Promise<NonNullable<ModelFileInfo['metadata']>> {
+  const raw = await request<{ metadata: NonNullable<ModelFileInfo['metadata']> }>('/admin/models/inspect', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model_path: modelPath }),
+  })
+  return raw.metadata
+}
+
 export async function removeModel(role: string): Promise<void> {
   await request(`/admin/models/${encodeURIComponent(role)}`, { method: 'DELETE' })
+}
+
+export async function updateModelEndpoint(role: string, endpoint: string): Promise<void> {
+  await request(`/admin/models/${encodeURIComponent(role)}/endpoint`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint }),
+  })
 }
 
 export async function reloadModels(): Promise<void> {

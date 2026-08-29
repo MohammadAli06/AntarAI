@@ -82,7 +82,7 @@ function getAdminNav(): NavEntry[] {
     { type: 'section', label: 'Governance' },
     { type: 'item', id: 'users', label: 'Users & Roles', icon: Users },
     { type: 'item', id: 'policies', label: 'Policies', icon: BarChart3 },
-    { type: 'item', id: 'approvals', label: 'Approval Rules', icon: FileCheck },
+    { type: 'item', id: 'approvals', label: 'Approval Queue', icon: FileCheck },
   ]
 }
 
@@ -130,7 +130,7 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
             </span>
             {!collapsed && (
               <span className="min-w-0">
-                <span className="block text-xs font-bold tracking-tight text-slate-100">AI ORCHESTRATOR</span>
+                <span className="block text-xs font-bold tracking-tight text-slate-100">Antar AI</span>
                 <span className="mt-0.5 block font-mono text-[8px] uppercase tracking-[0.16em] text-slate-500">
                   SOVEREIGN-V1
                 </span>

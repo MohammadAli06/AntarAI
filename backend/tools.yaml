@@ -5,6 +5,8 @@ tools:
   network_blocked: true
   description: Hardened subprocess with network blocking, a working-directory jail,
     and resource caps.
+  last_toggled_by: admin1
+  last_toggled_at: '2026-08-29T04:39:29.014747+00:00'
 - name: OCR Engine
   tool_type: ocr
   enabled: true

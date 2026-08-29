@@ -332,10 +332,11 @@ function AdminHome({ sovereignty }: { sovereignty: SovereigntyStatus | null }) {
   }
 
   // ── Active model statuses from /models ─────────────────────────────────────
-  function modelStatus(role: string): { label: string; active: boolean } {
-    const m = models.find((m) => m.role === role)
-    if (!m) return { label: 'IDLE', active: false }
-    return { label: m.active ? 'INFER' : (m.status === 'online' ? 'IDLE' : 'OFF'), active: !!m.active }
+  function modelStatus(model: ModelInfo): { label: string; active: boolean } {
+    return {
+      label: model.active ? 'INFER' : (model.status === 'online' ? 'IDLE' : 'OFF'),
+      active: Boolean(model.active),
+    }
   }
 
   return (
@@ -388,17 +389,16 @@ function AdminHome({ sovereignty }: { sovereignty: SovereigntyStatus | null }) {
               ACTIVE MODELS
             </div>
             <div className="space-y-2 font-mono text-xs">
-              {[
-                { name: 'Qwen3-8B', role: 'general' },
-                { name: 'Qwen-Coder', role: 'coder' },
-                { name: 'Qwen-VL', role: 'vision' },
-              ].map((m) => {
-                const { label, active } = modelStatus(m.role)
+              {models.length === 0 && (
+                <div className="py-1 text-slate-500">No models registered</div>
+              )}
+              {models.map((model) => {
+                const { label, active } = modelStatus(model)
                 return (
-                  <div key={m.role} className="flex items-center justify-between py-1 border-b border-line/30 last:border-0">
+                  <div key={model.role} className="flex items-center justify-between py-1 border-b border-line/30 last:border-0">
                     <div className="flex items-center gap-2 text-slate-300">
                       <span className={`size-1.5 rounded-full ${active ? 'bg-signal animate-pulse' : 'bg-slate-600'}`} />
-                      <span>{m.name}</span>
+                      <span>{model.name}</span>
                     </div>
                     <span className={active ? 'text-signal font-bold' : 'text-slate-500'}>{label}</span>
                   </div>

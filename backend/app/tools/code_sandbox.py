@@ -74,12 +74,30 @@ socket.create_connection = _create_connection
 '''
 
 
+_FENCED_CODE_BLOCK = re.compile(
+    r"(?ms)^[ \t]*(?P<fence>`{3,}|~{3,})[ \t]*(?P<language>[A-Za-z0-9_+-]*)[ \t]*\r?\n"
+    r"(?P<code>.*?)(?:^[ \t]*(?P=fence)[ \t]*$)"
+)
+
+
 def _extract_code_block(text: str) -> str:
-    """Pull the first ```python ... ``` block; else treat whole text as code."""
-    pattern = r"```(?:python)?\s*\n(.*?)```"
-    match = re.search(pattern, text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
+    """Extract a complete, explicitly delimited Python code block.
+
+    A generated response may contain an explanation before or after the code.
+    The sandbox must never mistake that prose (or an unclosed fence) for source.
+    Raw input remains supported for users who provide a Python script directly.
+    """
+    matches = list(_FENCED_CODE_BLOCK.finditer(text))
+    if matches:
+        for match in matches:
+            language = match.group("language").lower()
+            if language in {"", "python", "py"}:
+                return match.group("code").strip()
+        languages = ", ".join(sorted({match.group("language") or "plain text" for match in matches}))
+        raise ValueError(f"Python Sandbox received unsupported fenced language: {languages}")
+
+    if re.search(r"(?m)^[ \t]*(`{3,}|~{3,})", text):
+        raise ValueError("Code block is not closed. Start with ```python and end with ``` on its own line.")
     return text.strip()
 
 
@@ -89,7 +107,22 @@ def run_code_sandbox(code_or_response: str, persist_artifact: bool = True) -> di
     Returns dict: status, stdout, stderr, exit_code, code, network_blocked,
     egress_attempted, code_file, duration_ms.
     """
-    code = _extract_code_block(code_or_response)
+    try:
+        code = _extract_code_block(code_or_response)
+        compile(code, "solution.py", "exec")
+    except (SyntaxError, ValueError) as exc:
+        detail = f"Code validation failed before sandbox execution: {exc}"
+        return {
+            "status": "failed",
+            "stdout": "",
+            "stderr": detail,
+            "exit_code": 1,
+            "code": "",
+            "network_blocked": True,
+            "egress_attempted": False,
+            "code_file": None,
+            "duration_ms": 0,
+        }
 
     # Persist exactly the source that will be executed. Verification can opt
     # out so it re-runs the already-delivered artifact without creating a

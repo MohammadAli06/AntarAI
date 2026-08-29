@@ -138,11 +138,16 @@ def run_agent_stream(
     # ── 4. RAG retrieval ──────────────────────────────────────────────────
     yield _ev("knowledge.started", step_id="knowledge")
     sources: list[dict] = []
-    if is_tool_enabled("rag"):
+    # A code-only request has no document-grounding requirement. Retrieving
+    # from the general corpus here only produces accidental keyword matches
+    # (for example, invoice numbers appearing beside a Python request).
+    if role != "coder" and is_tool_enabled("rag"):
         try:
             sources = retrieve_sources(message, n_results=3)
         except Exception as exc:
             logger.warning("RAG retrieval failed: %s", exc)
+    elif role == "coder":
+        log_event("RETR", "Knowledge retrieval skipped for code task")
     log_event("RETR", f"Vector search complete — {len(sources)} sources retrieved")
     yield _ev("knowledge.completed", {"sources": sources}, step_id="knowledge")
 
@@ -161,7 +166,10 @@ def run_agent_stream(
         return
     _model_start = time.monotonic()
     try:
-        n_predict = 1024 if role == "coder" else 512
+        # Code artifacts can be several hundred lines.  Leave enough space for
+        # a complete closing fence and avoid handing a truncated script to the
+        # sandbox.
+        n_predict = 2048 if role == "coder" else 512
         model_response = call_model(role, prompt, n_predict=n_predict)
     except RuntimeError as exc:
         log_event("ERROR", f"Model call failed: {exc}")
@@ -263,7 +271,7 @@ def run_agent_stream(
     # failed checks, low confidence — goes to the Approval Queue.
     # NOTE: coder tasks are classified as medium risk by _risk_for(), so
     # they already fail the max_risk:low threshold without a special case.
-    risk = _risk_for(role, bool(generated_file))
+    risk = _risk_for(role, bool(generated_file), generated_file)
     requires_approval = not (
         risk == "low"
         and verification.get("passed", False)
@@ -420,11 +428,13 @@ def _build_artifact(filename: str) -> dict:
     }
 
 
-def _risk_for(role: str, generates_file: bool) -> str:
+def _risk_for(role: str, generates_file: bool, generated_file: Optional[str] = None) -> str:
+    if generated_file and str(generated_file).lower().endswith(".docx"):
+        return "high"  # Formal Word Approval Note Deliverable
+    if role == "coder":
+        return "medium"  # Code execution task (runs in sandbox)
     if generates_file:
         return "high"
-    if role == "coder":
-        return "medium"
     return "low"
 
 
@@ -448,8 +458,11 @@ def _build_prompt(
         ),
         "coder": (
             "You are AntarAI-Coder, an on-premise Python code assistant for MRPL engineers. "
-            "Write clean, production-grade Python code with docstrings in a single ```python block. "
-            "Include a brief explanation of what the code does after the code block."
+            "For code that will be executed, return exactly one complete Python source block: "
+            "put ```python on a line by itself before the first code line and ``` on a line by itself after the final code line. "
+            "Do not put prose, Markdown, or an explanation inside the block, and always close triple-quoted strings, brackets, and the code fence. "
+            "Keep the script self-contained, use only the Python standard library unless the user explicitly supplies a dependency, "
+            "and print a short result so sandbox execution can be verified."
         ),
         "vision": (
             "You are AntarAI, an on-premise document analysis assistant for MRPL. "

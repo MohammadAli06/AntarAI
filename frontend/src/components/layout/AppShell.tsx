@@ -73,7 +73,7 @@ export function AppShell({
             <MobileMenuButton onClick={onToggleMobile} />
             <div className="flex items-center gap-2 font-mono">
               <span className="text-xs font-bold tracking-tight text-slate-100 sm:text-sm">
-                ORCHESTRATOR // SYSTEM_ROOT
+                Antar AI // SYSTEM_ROOT
               </span>
             </div>
           </div>

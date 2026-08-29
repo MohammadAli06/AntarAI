@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { CheckCircle2, Cpu, ExternalLink, Info, Plus, RefreshCw, Server, Trash2, Zap } from 'lucide-react'
+import { CheckCircle2, Cpu, ExternalLink, Info, Pencil, Plus, RefreshCw, Server, Trash2, Zap } from 'lucide-react'
 import { Icon } from '../components/ui/Icon'
 import type { ModelInfo } from '../lib/types'
-import { addModel, reloadModels, removeModel } from '../lib/api'
+import { addModel, fetchLocalModelFiles, inspectLocalModelFile, reloadModels, removeModel, updateModelEndpoint } from '../lib/api'
+import type { ModelFileInfo } from '../lib/api'
 
 interface ModelsViewProps {
   models: ModelInfo[]
@@ -31,18 +32,39 @@ const CAPABILITIES: Record<string, string[]> = {
   vision: ['Image Understanding', 'OCR', 'P&ID Reading', 'Chart Analysis'],
 }
 
+function formatBytes(bytes?: number) {
+  if (!bytes) return '—'
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`
+}
+
 export function ModelsView({ models, loading, error, isAdmin = false, onChanged }: ModelsViewProps) {
   const displayModels = models
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ role: '', name: '', endpoint: 'http://127.0.0.1:8081/completion', description: '', capabilities: '' })
+  const [form, setForm] = useState({ role: 'general', model_path: '', endpoint: 'http://127.0.0.1:8081/completion', model_id: '', description: '', capabilities: '', runtime_context_tokens: '4096', load_policy: 'on_demand', priority: '100', gpu_node: 'local' })
+  const [modelFiles, setModelFiles] = useState<ModelFileInfo[]>([])
+  const [detected, setDetected] = useState<ModelFileInfo['metadata'] | null>(null)
   const [actionError, setActionError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [endpointEditor, setEndpointEditor] = useState<{ role: string; endpoint: string } | null>(null)
+
+  useEffect(() => {
+    if (!showForm) return
+    void fetchLocalModelFiles().then(setModelFiles).catch((error) => setActionError(error instanceof Error ? error.message : 'Could not list local GGUF files'))
+  }, [showForm])
+
+  async function selectModelFile(modelPath: string) {
+    setForm((previous) => ({ ...previous, model_path: modelPath }))
+    setDetected(null)
+    if (!modelPath) return
+    try { setDetected(await inspectLocalModelFile(modelPath)) }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Could not inspect GGUF metadata') }
+  }
 
   async function submitModel(event: FormEvent) {
     event.preventDefault()
     setSaving(true); setActionError('')
     try {
-      await addModel({ ...form, capabilities: form.capabilities.split(',').map((v) => v.trim()).filter(Boolean) })
+      await addModel({ ...form, runtime_context_tokens: Number(form.runtime_context_tokens), priority: Number(form.priority), capabilities: form.capabilities.split(',').map((v) => v.trim()).filter(Boolean) })
       setShowForm(false)
       await onChanged?.()
     } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not add model') }
@@ -53,6 +75,17 @@ export function ModelsView({ models, loading, error, isAdmin = false, onChanged 
     if (!window.confirm(`Remove the ${role} model registration?`)) return
     try { await removeModel(role); await onChanged?.() }
     catch (error) { setActionError(error instanceof Error ? error.message : 'Could not remove model') }
+  }
+
+  async function saveEndpoint() {
+    if (!endpointEditor) return
+    setSaving(true); setActionError('')
+    try {
+      await updateModelEndpoint(endpointEditor.role, endpointEditor.endpoint.trim())
+      setEndpointEditor(null)
+      await onChanged?.()
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'Could not update model endpoint') }
+    finally { setSaving(false) }
   }
 
   return (
@@ -71,10 +104,36 @@ export function ModelsView({ models, loading, error, isAdmin = false, onChanged 
         </div>
 
         {showForm && <form onSubmit={submitModel} className="grid gap-3 border border-line bg-panel/50 p-4 sm:grid-cols-2">
-          {(['role', 'name', 'endpoint', 'description', 'capabilities'] as const).map((field) => <label key={field} className={field === 'description' || field === 'capabilities' ? 'sm:col-span-2' : ''}><span className="mb-1 block font-mono text-[9px] uppercase text-muted">{field}</span><input required={field !== 'description' && field !== 'capabilities'} value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>)}
-          <button disabled={saving} className="border border-signal/30 bg-signal/10 px-3 py-2 text-xs text-signal sm:col-span-2">{saving ? 'Validating endpoint…' : 'Register Model'}</button>
+          <div className="sm:col-span-2 border border-line/60 bg-ink/25 p-3">
+            <div className="mb-2 font-mono text-[9px] uppercase tracking-wider text-muted">Model file — local GGUF</div>
+            <select required value={form.model_path} onChange={(event) => void selectModelFile(event.target.value)} className="control-input w-full px-3 py-2 text-xs">
+              <option value="">Select a file from backend/models</option>
+              {modelFiles.map((file) => <option key={file.path} value={file.path} disabled={Boolean(file.error)}>{file.path}{file.error ? ' (unreadable)' : ''}</option>)}
+            </select>
+            {modelFiles.length === 0 && <div className="mt-2 text-[10px] text-warning">Place a .gguf file under backend/models to register it.</div>}
+          </div>
+          {detected && <div className="sm:col-span-2 grid grid-cols-2 gap-px border border-signal/25 bg-line/40 sm:grid-cols-4">{[
+            ['Name', detected.name], ['Format', detected.format], ['Quantization', detected.quantization], ['Architecture', detected.architecture],
+            ['Parameters', detected.parameter_count], ['Model max context', detected.model_context_tokens ? `${Math.round(detected.model_context_tokens / 1024)}K` : '—'], ['File size', formatBytes(detected.file_size_bytes)], ['Tensors', detected.tensor_count?.toLocaleString()],
+          ].map(([label, value]) => <div key={label} className="bg-panel/80 px-3 py-2"><div className="font-mono text-[8px] uppercase text-slate-600">{label}</div><div className="mt-0.5 truncate text-[10px] text-slate-200">{value || '—'}</div></div>)}</div>}
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Role</span><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} className="control-input w-full px-3 py-2 text-xs"><option value="general">General</option><option value="coder">Coder</option><option value="vision">Vision</option></select></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Endpoint / node</span><input required value={form.endpoint} onChange={(event) => setForm({ ...form, endpoint: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Runtime context</span><input required type="number" min="256" value={form.runtime_context_tokens} onChange={(event) => setForm({ ...form, runtime_context_tokens: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Load policy</span><select value={form.load_policy} onChange={(event) => setForm({ ...form, load_policy: event.target.value })} className="control-input w-full px-3 py-2 text-xs"><option value="on_demand">On demand</option><option value="always_loaded">Always loaded</option><option value="manual">Manual</option></select></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">GPU node</span><input value={form.gpu_node} onChange={(event) => setForm({ ...form, gpu_node: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Priority</span><input required type="number" min="0" value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Capabilities</span><input value={form.capabilities} onChange={(event) => setForm({ ...form, capabilities: event.target.value })} placeholder="reasoning, document-analysis" className="control-input w-full px-3 py-2 text-xs" /></label>
+          <label><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Model ID (optional)</span><input value={form.model_id} onChange={(event) => setForm({ ...form, model_id: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <label className="sm:col-span-2"><span className="mb-1 block font-mono text-[9px] uppercase text-muted">Description</span><input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <button disabled={saving || !form.model_path} className="border border-signal/30 bg-signal/10 px-3 py-2 text-xs text-signal sm:col-span-2">{saving ? 'Registering local model…' : 'Register Model'}</button>
         </form>}
         {actionError && <div className="border border-danger/30 bg-danger/10 px-4 py-3 text-xs text-danger">{actionError}</div>}
+
+        {endpointEditor && <form onSubmit={(event) => { event.preventDefault(); void saveEndpoint() }} className="flex flex-wrap items-end gap-3 border border-signal/30 bg-signal/5 p-4">
+          <label className="min-w-[260px] flex-1"><span className="mb-1 block font-mono text-[9px] uppercase text-muted">{ROLE_LABELS[endpointEditor.role] ?? endpointEditor.role} endpoint URL</span><input required type="url" value={endpointEditor.endpoint} onChange={(event) => setEndpointEditor({ ...endpointEditor, endpoint: event.target.value })} className="control-input w-full px-3 py-2 text-xs" /></label>
+          <button disabled={saving} className="border border-signal/30 bg-signal/10 px-3 py-2 text-xs text-signal">{saving ? 'Saving…' : 'Save URL'}</button>
+          <button type="button" disabled={saving} onClick={() => setEndpointEditor(null)} className="px-3 py-2 text-xs text-muted hover:text-slate-100">Cancel</button>
+        </form>}
 
         {loading && (
           <div className="flex items-center gap-2 text-xs text-muted">
@@ -94,8 +153,10 @@ export function ModelsView({ models, loading, error, isAdmin = false, onChanged 
           {!loading && displayModels.length === 0 && (
             <div className="border border-line bg-panel/40 p-4 text-xs text-muted">No live model registry data available.</div>
           )}
-          {displayModels.map((model) => (
-            <div key={model.name} className="border border-line bg-panel/60">
+          {displayModels.map((model) => {
+            const inspected = model.metadataStatus === 'detected'
+            const runtimeContext = model.runtimeContextLength ?? model.contextLength
+            return <div key={`${model.role}-${model.name}`} className="border border-line bg-panel/60">
               {/* Card header */}
               <div className="flex items-start justify-between border-b border-line p-5">
                 <div className="flex items-start gap-4">
@@ -124,10 +185,10 @@ export function ModelsView({ models, loading, error, isAdmin = false, onChanged 
               {/* Specs grid */}
               <div className="grid grid-cols-2 gap-0 sm:grid-cols-4 divide-x divide-y divide-line/40 border-b border-line">
                 {[
-                  { label: 'Format', value: 'GGUF' },
-                  { label: 'Quantization', value: model.quantization ?? 'Q4_K_M' },
-                  { label: 'VRAM', value: model.vramGb !== undefined ? `${model.vramGb} GB` : '—' },
-                  { label: 'Context', value: model.contextLength !== undefined ? `${(model.contextLength / 1024).toFixed(0)}K` : '—' },
+                  { label: 'Format', value: inspected ? model.format : 'Not inspected' },
+                  { label: 'Quantization', value: inspected ? model.quantization : 'Not inspected' },
+                  { label: 'Model VRAM', value: model.estimatedVramGb !== undefined ? `Estimated ~${model.estimatedVramGb} GB` : 'Needs GGUF' },
+                  { label: 'Runtime context', value: runtimeContext !== undefined ? `${Math.round(runtimeContext / 1024)}K` : 'Not configured' },
                 ].map((spec) => (
                   <div key={spec.label} className="flex flex-col gap-0.5 px-4 py-3">
                     <span className="font-mono text-[8px] uppercase tracking-wider text-slate-600">{spec.label}</span>
@@ -136,12 +197,21 @@ export function ModelsView({ models, loading, error, isAdmin = false, onChanged 
                 ))}
               </div>
 
+              <div className="grid grid-cols-2 divide-x divide-y divide-line/40 border-b border-line sm:grid-cols-4">
+                {[
+                  { label: 'Architecture', value: model.architecture ?? 'Not inspected' },
+                  { label: 'Parameters', value: model.parameterCount ?? 'Not inspected' },
+                  { label: 'Model max context', value: model.modelContextLength ? `${Math.round(model.modelContextLength / 1024)}K` : 'Not inspected' },
+                  { label: 'File / tensors', value: model.fileSizeBytes ? `${formatBytes(model.fileSizeBytes)} · ${model.tensorCount?.toLocaleString() ?? '—'}` : 'Not inspected' },
+                ].map((spec) => <div key={spec.label} className="flex flex-col gap-0.5 px-4 py-3"><span className="font-mono text-[8px] uppercase tracking-wider text-slate-600">{spec.label}</span><span className="truncate font-mono text-[10px] text-slate-300">{spec.value}</span></div>)}
+              </div>
+
               {/* Footer */}
               <div className="flex items-center justify-between p-4">
                 <div className="flex flex-wrap gap-1.5">
-                  {(CAPABILITIES[model.role] ?? []).map((cap) => (
-                    <span key={cap} className="border border-line px-1.5 py-0.5 font-mono text-[8px] text-slate-600">
-                      {cap}
+                  {((model.capabilities && model.capabilities.length > 0) ? model.capabilities : (CAPABILITIES[model.role] ?? [])).map((cap) => (
+                    <span key={cap} className="border border-signal/25 bg-signal/5 px-2 py-0.5 font-mono text-[8px] text-signal">
+                      ✓ {cap}
                     </span>
                   ))}
                 </div>
@@ -156,10 +226,16 @@ export function ModelsView({ models, loading, error, isAdmin = false, onChanged 
                       {model.checksum}
                     </div>
                   )}
+                  {isAdmin && <button onClick={() => setEndpointEditor({ role: model.role, endpoint: model.endpoint ?? '' })} className="flex items-center gap-1 text-[9px] text-muted hover:text-signal" title="Edit endpoint URL"><Icon icon={Pencil} size={11} /> Edit URL</button>}
                 </div>
               </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/50 px-4 py-2 font-mono text-[8px] text-slate-500">
+                <span>GPU: <span className="text-slate-300">{model.gpuName ?? 'not detected'}</span>{model.gpuVramGb ? ` · ${model.gpuVramGb} GB` : ''}</span>
+                <span>Policy: <span className="text-slate-300">{model.loadPolicy ?? 'on demand'}</span></span>
+                <span className={inspected ? 'text-signal' : 'text-warning'}>{inspected ? 'GGUF metadata detected locally' : model.inspectionError ?? 'GGUF metadata not yet inspected'}</span>
+              </div>
             </div>
-          ))}
+          })}
         </div>
 
         {/* Info footer */}

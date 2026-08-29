@@ -285,6 +285,22 @@ export interface ModelInfo {
   active?: boolean
   format?: string
   capabilities?: string[]
+  modelPath?: string
+  architecture?: string
+  parameterCount?: string
+  fileSizeBytes?: number
+  tensorCount?: number
+  modelContextLength?: number
+  estimatedVramGb?: number
+  runtimeContextLength?: number
+  loadPolicy?: string
+  priority?: number
+  gpuNode?: string
+  enabled?: boolean
+  gpuName?: string | null
+  gpuVramGb?: number | null
+  metadataStatus?: 'detected' | 'not_inspected' | 'error' | string
+  inspectionError?: string | null
 }
 
 

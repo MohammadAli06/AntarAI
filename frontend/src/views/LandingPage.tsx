@@ -116,7 +116,7 @@ export function LandingPage({ theme, onToggleTheme, onLogin, onEnter }: LandingP
           <div className="flex items-center justify-between border-b border-line/60 bg-ink/70 px-4 py-2.5">
             <div className="flex items-center gap-2 font-mono text-[10px] text-slate-400">
               <span className="size-2 rounded-full bg-signal" />
-              <span>ORCHESTRATOR // SOVEREIGN_DAEMON</span>
+              <span>Antar AI // SOVEREIGN_DAEMON</span>
             </div>
             <div className="flex items-center gap-3 font-mono text-[9px] text-slate-500">
               <span className="text-signal">EGRESS: BLOCKED</span>

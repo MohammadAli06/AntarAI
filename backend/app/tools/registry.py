@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
@@ -32,13 +33,17 @@ def is_tool_enabled(tool_type: str) -> bool:
     return bool(match is None or match.get("enabled", True))
 
 
-def set_enabled(name: str, enabled: bool) -> None:
+def set_enabled(name: str, enabled: bool, toggled_by: str = "system") -> dict:
+    """Persist a tool state change together with its governance audit metadata."""
     with _lock:
         tool = next((item for item in _tools if item.get("name") == name), None)
         if tool is None:
             raise KeyError(name)
         tool["enabled"] = enabled
+        tool["last_toggled_by"] = toggled_by
+        tool["last_toggled_at"] = datetime.now(timezone.utc).isoformat()
         _persist()
+        return dict(tool)
 
 
 def _probe(tool_type: str) -> tuple[bool, dict]:
@@ -80,6 +85,8 @@ def list_tools() -> list[dict]:
             "status": "disabled" if not enabled else ("online" if available else "offline"),
             "networkBlocked": bool(tool.get("network_blocked", False)),
             "description": tool.get("description", ""),
+            "lastToggledBy": tool.get("last_toggled_by"),
+            "lastToggledAt": tool.get("last_toggled_at"),
             **extra,
         })
     return result

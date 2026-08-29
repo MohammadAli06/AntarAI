@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -118,6 +119,12 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     username: str
     role: str
+
+
+class ModelInspectRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    model_path: str
 
 
 class ChatResponse(BaseModel):
@@ -533,6 +540,25 @@ async def add_registered_model(
     return {"status": "added", "models": model_registry.list_models()}
 
 
+@app.get("/admin/models/files", tags=["admin"])
+async def list_local_model_files(
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    """List GGUF files placed on this node for metadata-driven registration."""
+    return {"files": model_registry.list_model_files()}
+
+
+@app.post("/admin/models/inspect", tags=["admin"])
+async def inspect_local_model_file(
+    body: ModelInspectRequest,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    try:
+        return {"metadata": model_registry.inspect_model_file(body.model_path)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.delete("/admin/models/{role}", tags=["admin"])
 async def remove_registered_model(
     role: str,
@@ -545,6 +571,22 @@ async def remove_registered_model(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "removed", "models": model_registry.list_models()}
+
+
+@app.patch("/admin/models/{role}/endpoint", tags=["admin"])
+async def update_registered_model_endpoint(
+    role: str,
+    body: dict,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    endpoint = str(body.get("endpoint", "")).strip()
+    try:
+        model_registry.update_model_endpoint(role, endpoint)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"No model registered for role: {role}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "updated", "models": model_registry.list_models()}
 
 
 @app.post("/admin/models/reload", tags=["admin"])
@@ -747,7 +789,8 @@ def _get_system_metrics() -> dict:
     """Read live CPU%, RAM%, and GPU/VRAM from the orchestrator node.
 
     psutil covers CPU and RAM (already a dependency).
-    pynvml covers GPU/VRAM; gracefully absent if no NVIDIA GPU or pynvml not installed.
+    pynvml covers GPU/VRAM. On Windows NVIDIA systems without that Python
+    package, use the locally installed ``nvidia-smi`` driver utility instead.
     Labelled as 'Orchestrator node' — honest about single-node scope.
     """
     cpu_percent: float = 0.0
@@ -783,7 +826,29 @@ def _get_system_metrics() -> dict:
         gpu_available = True
         pynvml.nvmlShutdown()
     except Exception:
-        gpu_available = False
+        # ``nvidia-smi`` ships with the NVIDIA display driver, so this keeps
+        # the overview live without requiring a separate pynvml installation.
+        # It is a local process query and makes no network call.
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,utilization.gpu,memory.used,memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=3,
+            )
+            values = [value.strip() for value in result.stdout.splitlines()[0].split(",")]
+            gpu_name, utilization, memory_used, memory_total = values
+            gpu_percent = float(utilization)
+            vram_used = int(float(memory_used) * 1024 * 1024)
+            vram_total = int(float(memory_total) * 1024 * 1024)
+            gpu_available = vram_total > 0
+        except (FileNotFoundError, IndexError, ValueError, subprocess.SubprocessError):
+            gpu_available = False
 
     return {
         "node": "Orchestrator",
@@ -989,9 +1054,10 @@ async def toggle_registered_tool(
     current_user: Principal = Depends(require_role(["admin"])),
 ):
     try:
-        tool_registry.set_enabled(name, enabled)
+        tool_registry.set_enabled(name, enabled, toggled_by=current_user.username)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"Tool not found: {name}") from exc
+    log_event("GOV", f"Tool '{name}' {'enabled' if enabled else 'disabled'} by {current_user.username}")
     return {"status": "updated", "tools": tool_registry.list_tools()}
 
 

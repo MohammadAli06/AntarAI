@@ -25,6 +25,7 @@ import requests
 import yaml
 from app.system_log import log_event
 from app.models.schemas import ModelEntry
+from app.models.gguf_inspector import inspect_gguf
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +34,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CONFIG_PATH = Path(__file__).resolve().parents[2] / "models.yaml"
+_MODEL_DIR = Path(__file__).resolve().parents[2] / "models"
 
 
 def _load_config() -> dict:
     if not _CONFIG_PATH.exists():
         raise FileNotFoundError(f"models.yaml not found at {_CONFIG_PATH}")
     with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f) or {}
+    if isinstance(data, dict) and "models" in data and isinstance(data["models"], dict):
+        return data["models"]
+    return data if isinstance(data, dict) else {}
 
 
 _config_lock = RLock()
@@ -56,7 +61,54 @@ def reload_models() -> dict:
 
 def _persist_config() -> None:
     with open(_CONFIG_PATH, "w", encoding="utf-8") as file:
-        yaml.safe_dump(_config, file, sort_keys=False, allow_unicode=True)
+        yaml.safe_dump({"models": _config}, file, sort_keys=False, allow_unicode=True)
+
+
+def _detect_gpu() -> dict:
+    try:
+        import pynvml  # type: ignore
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        gpu_name = pynvml.nvmlDeviceGetName(handle)
+        if isinstance(gpu_name, bytes):
+            gpu_name = gpu_name.decode("utf-8", errors="replace")
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        total_gb = round(info.total / (1024 ** 3), 1)
+        pynvml.nvmlShutdown()
+        return {"name": gpu_name, "total_vram_gb": total_gb, "available": True}
+    except Exception:
+        return {"name": None, "total_vram_gb": None, "available": False}
+
+
+def _resolve_model_path(model_path: str) -> Path:
+    if not model_path:
+        raise ValueError("Select a GGUF file from backend/models")
+    supplied = Path(model_path)
+    resolved = supplied.resolve() if supplied.is_absolute() else (_MODEL_DIR / supplied).resolve()
+    root = _MODEL_DIR.resolve()
+    if root != resolved and root not in resolved.parents:
+        raise ValueError("Model files must be placed under backend/models")
+    return resolved
+
+
+def inspect_model_file(model_path: str) -> dict:
+    path = _resolve_model_path(model_path)
+    result = inspect_gguf(path)
+    result["model_path"] = str(path.relative_to(_MODEL_DIR.resolve())).replace("\\", "/")
+    return result
+
+
+def list_model_files() -> list[dict]:
+    if not _MODEL_DIR.exists():
+        return []
+    result = []
+    for path in _MODEL_DIR.rglob("*.gguf"):
+        try:
+            metadata = inspect_model_file(str(path))
+            result.append({"path": metadata["model_path"], "metadata": metadata})
+        except Exception as exc:
+            result.append({"path": str(path.relative_to(_MODEL_DIR)).replace("\\", "/"), "error": str(exc)})
+    return result
 
 
 def validate_endpoint(endpoint: str, timeout: float = 3.0) -> bool:
@@ -75,10 +127,29 @@ def validate_endpoint(endpoint: str, timeout: float = 3.0) -> bool:
 
 
 def add_model(entry: ModelEntry) -> None:
-    if not validate_endpoint(entry.endpoint):
-        raise ValueError(f"Endpoint not reachable: {entry.endpoint}")
+    parsed = urlparse(entry.endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Enter a valid local model endpoint URL")
+    detected = inspect_model_file(entry.model_path)
+    config = {
+        "role": entry.role,
+        "name": detected["name"],
+        "model_id": entry.model_id,
+        "endpoint": entry.endpoint,
+        "model_path": detected["model_path"],
+        "capabilities": entry.capabilities,
+        "description": entry.description,
+        "metadata": {key: value for key, value in detected.items() if key != "model_path"},
+        "runtime": {
+            "context_size": entry.runtime_context_tokens,
+            "load_policy": entry.load_policy,
+            "priority": entry.priority,
+            "gpu_node": entry.gpu_node,
+            "enabled": entry.enabled,
+        },
+    }
     with _config_lock:
-        _config[entry.role] = entry.model_dump(exclude_none=True)
+        _config[entry.role] = config
         _persist_config()
 
 
@@ -89,6 +160,18 @@ def remove_model(role: str) -> None:
         if role not in _config:
             raise KeyError(role)
         del _config[role]
+        _persist_config()
+
+
+def update_model_endpoint(role: str, endpoint: str) -> None:
+    """Persist a registered model's runtime endpoint without re-registering its GGUF."""
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Enter a valid local model endpoint URL")
+    with _config_lock:
+        if role not in _config:
+            raise KeyError(role)
+        _config[role]["endpoint"] = endpoint
         _persist_config()
 
 # In-process sovereignty counter (also persisted to DB by main.py)
@@ -118,40 +201,65 @@ def is_role_active(role: str) -> bool:
 
 
 def list_models() -> list[dict]:
-    """Return registry entries with live reachability status."""
+    """Return configured runtime entries plus real local GGUF/GPU metadata."""
     result = []
     endpoint_status: dict[str, str] = {}
+    gpu_info = _detect_gpu()
     with _config_lock:
         configured = list(_config.items())
+
     for role, info in configured:
         endpoint = info.get("endpoint", "http://127.0.0.1:8081/completion")
-        base = endpoint.rsplit("/", 1)[0]           # strip /completion
-        health_url = f"{base}/health"
-
-        # Only probe each server once
+        parsed_endpoint = urlparse(endpoint)
+        health_url = f"{parsed_endpoint.scheme}://{parsed_endpoint.netloc}/health"
         if health_url not in endpoint_status:
             try:
-                r = requests.get(health_url, timeout=2)
-                status = "online" if r.status_code == 200 else "offline"
+                status = "online" if requests.get(health_url, timeout=2).status_code == 200 else "offline"
             except Exception:
                 status = "offline"
             endpoint_status[health_url] = status
         else:
             status = endpoint_status[health_url]
 
+        metadata = dict(info.get("metadata") or {})
+        inspection_error = None
+        if info.get("model_path"):
+            try:
+                metadata = inspect_model_file(str(info["model_path"]))
+            except Exception as exc:
+                inspection_error = str(exc)
+        runtime = dict(info.get("runtime") or {})
+        runtime_context = runtime.get("context_size") or info.get("context_tokens")
         result.append({
             "role": role,
-            "name": info["name"],
+            "name": metadata.get("name") or info.get("name", role),
             "model_id": info.get("model_id", ""),
             "endpoint": endpoint,
             "description": info.get("description", ""),
-            "format": info.get("format", "GGUF"),
-            "quantization": info.get("quantization", "Q4_K_M"),
-            "vram_gb": info.get("vram_gb"),
-            "context_tokens": info.get("context_tokens"),
+            "model_path": info.get("model_path"),
+            "format": metadata.get("format") or info.get("format"),
+            "quantization": metadata.get("quantization") or info.get("quantization"),
+            "architecture": metadata.get("architecture"),
+            "parameter_count": metadata.get("parameter_count"),
+            "file_size_bytes": metadata.get("file_size_bytes"),
+            "tensor_count": metadata.get("tensor_count"),
+            "model_context_tokens": metadata.get("model_context_tokens"),
+            "estimated_vram_gb": metadata.get("estimated_vram_gb"),
+            "runtime_context_tokens": runtime_context,
+            "load_policy": runtime.get("load_policy", "on_demand"),
+            "priority": runtime.get("priority", 100),
+            "gpu_node": runtime.get("gpu_node", "local"),
+            "enabled": runtime.get("enabled", True),
+            "gpu_name": gpu_info["name"],
+            "gpu_vram_gb": gpu_info["total_vram_gb"],
+            "metadata_status": "error" if inspection_error else ("detected" if metadata else "not_inspected"),
+            "inspection_error": inspection_error,
             "capabilities": info.get("capabilities", []),
-            "status": status,
+            "status": "disabled" if runtime.get("enabled") is False else status,
             "active": is_role_active(role),
+            # Compatibility aliases for existing consumers.
+            "vram_gb": metadata.get("estimated_vram_gb"),
+            "context_tokens": runtime_context,
         })
     return result
 

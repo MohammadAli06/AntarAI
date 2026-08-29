@@ -28,6 +28,9 @@ _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 _CHUNK_SIZE = 500   # chars
 _CHUNK_OVERLAP = 50
+# A vector store always returns its nearest chunks, even when none are useful.
+# Do not present those weak neighbours as evidence in an agent response.
+_MIN_EVIDENCE_RELEVANCE = 0.35
 
 # ---------------------------------------------------------------------------
 # Lazy imports — graceful degradation if not installed
@@ -235,7 +238,7 @@ import time
 from app.system_log import log_event
 
 
-def retrieve_sources(query: str, n_results: int = 3) -> list[dict]:
+def retrieve_sources(query: str, n_results: int = 3, min_relevance: float = _MIN_EVIDENCE_RELEVANCE) -> list[dict]:
     """Retrieve top-k chunks with metadata, shaped as EvidenceSource dicts.
 
     Returns [] if ChromaDB is unavailable or the collection is empty — the
@@ -266,6 +269,8 @@ def retrieve_sources(query: str, n_results: int = 3) -> list[dict]:
         dist = dists[i] if i < len(dists) else 1.0
         filename = meta.get("filename", "knowledge")
         relevance = max(0.0, min(1.0, 1.0 - float(dist)))
+        if relevance < min_relevance:
+            continue
         sources.append({
             "id": f"src-{i + 1}",
             "title": Path(filename).stem if filename else "knowledge",
@@ -276,7 +281,7 @@ def retrieve_sources(query: str, n_results: int = 3) -> list[dict]:
         })
 
     elapsed = time.perf_counter() - t0
-    log_event("RETR", f"Vector search executed: {elapsed:.3f}s (results: {len(sources)})")
+    log_event("RETR", f"Vector search executed: {elapsed:.3f}s (relevant results: {len(sources)})")
     return sources
 
 

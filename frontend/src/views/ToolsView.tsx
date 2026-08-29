@@ -1,4 +1,4 @@
-import { CheckCircle2, Wrench, XCircle } from 'lucide-react'
+import { CheckCircle2, Clock, User, Wrench, XCircle } from 'lucide-react'
 import { useState } from 'react'
 import { Icon } from '../components/ui/Icon'
 import type { ToolInfo } from '../lib/api'
@@ -18,6 +18,11 @@ const TYPE_COLORS: Record<string, string> = {
   rag: 'border-orange-500/30 bg-orange-500/8 text-orange-400',
   verification: 'border-signal/30 bg-signal/8 text-signal',
   model: 'border-signal/30 bg-signal/8 text-signal',
+}
+
+function formatToggleTime(value?: string | null) {
+  if (!value) return 'Never changed'
+  try { return new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) } catch { return value }
 }
 
 export function ToolsView({ tools, loading, isAdmin = false, onChanged }: ToolsViewProps) {
@@ -81,6 +86,14 @@ export function ToolsView({ tools, loading, isAdmin = false, onChanged }: ToolsV
                   <span className={`font-mono text-[9px] ${tool.networkBlocked ? 'text-signal' : 'text-slate-600'}`}>
                     {tool.networkBlocked ? 'BLOCKED' : 'N/A'}
                   </span>
+                </div>
+                <div className="mt-2 border border-line/50 bg-ink/20 px-2.5 py-2 font-mono text-[8px] text-slate-500">
+                  {tool.lastToggledAt ? (
+                    <>
+                      <div className="flex items-center gap-1.5"><Icon icon={User} size={9} /> Changed by <span className="text-slate-300">{tool.lastToggledBy || 'system'}</span></div>
+                      <div className="mt-1 flex items-center gap-1.5"><Icon icon={Clock} size={9} /> {formatToggleTime(tool.lastToggledAt)}</div>
+                    </>
+                  ) : <span>{formatToggleTime(tool.lastToggledAt)}</span>}
                 </div>
                 {isAdmin && <button disabled={loading} onClick={() => void changeTool(tool)} className={`mt-3 w-full border px-3 py-2 font-mono text-[9px] ${tool.enabled === false ? 'border-signal/30 text-signal' : 'border-warning/30 text-warning'}`}>{tool.enabled === false ? 'ENABLE TOOL' : 'DISABLE TOOL'}</button>}
               </div>

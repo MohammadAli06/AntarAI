@@ -118,8 +118,11 @@ def _configured_services() -> list[dict]:
         if _CONFIG_PATH.exists():
             with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
+            models_dict = cfg.get("models", cfg) if isinstance(cfg, dict) else {}
             seen_ports: set[int] = {8000}
-            for role, info in cfg.items():
+            for role, info in models_dict.items():
+                if not isinstance(info, dict):
+                    continue
                 endpoint = info.get("endpoint", "")
                 # endpoint like http://127.0.0.1:8081/completion
                 if "127.0.0.1:" in endpoint:
@@ -184,7 +187,8 @@ def model_integrity() -> list[dict]:
         if _CONFIG_PATH.exists():
             with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
-            model_name = cfg.get("general", {}).get("name", model_name)
+            models_dict = cfg.get("models", cfg) if isinstance(cfg, dict) else {}
+            model_name = models_dict.get("general", {}).get("name", model_name)
     except Exception:  # pragma: no cover
         pass
 

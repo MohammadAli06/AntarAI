@@ -1,19 +1,54 @@
-general:
-  name: Qwen3-8B-Q4_K_M
-  model_id: Qwen/Qwen3-8B-GGUF
-  role: general
-  endpoint: http://127.0.0.1:8081/completion
-  description: General reasoning, Q&A, document analysis — Qwen3-8B Q4_K_M quantized
-coder:
-  name: Qwen3-8B-Q4_K_M
-  model_id: Qwen/Qwen3-8B-GGUF
-  role: coder
-  endpoint: http://127.0.0.1:8081/completion
-  description: Code generation & debugging (same model, routed by prompt — dedicated
-    coder model next)
-vision:
-  name: Qwen3-8B-Q4_K_M
-  model_id: Qwen/Qwen3-8B-GGUF
-  role: vision
-  endpoint: http://127.0.0.1:8081/completion
-  description: Document extraction & OCR analysis — Qwen3-8B with Tesseract pre-processing
+models:
+  general:
+    name: Qwen3-8B-Q4_K_M
+    model_id: Qwen/Qwen3-8B-GGUF
+    role: general
+    endpoint: http://127.0.0.1:8081/completion
+    format: GGUF
+    quantization: Q4_K_M
+    capabilities:
+    - reasoning
+    - question-answering
+    - document-analysis
+    - summarization
+    - multilingual
+    description: General reasoning, Q&A and document analysis using Qwen3-8B Q4_K_M.
+    runtime:
+      context_size: 4096
+      load_policy: on_demand
+  coder:
+    name: Ornith-1.0-9B-Q4_K_M
+    model_id: DreamFoundries/Ornith-1.0-9B
+    role: coder
+    endpoint: http://127.0.0.1:8081/completion
+    format: GGUF
+    quantization: Q4_K_M
+    capabilities:
+    - code-generation
+    - code-debugging
+    - code-review
+    - agentic-coding
+    - tool-use
+    description: Specialized local coding and agentic coding model.
+    runtime:
+      context_size: 4096
+      load_policy: on_demand
+  vision:
+    name: Qwen3-VL-8B-Instruct-Q4_K_M
+    model_id: Qwen/Qwen3-VL-8B-Instruct-GGUF
+    role: vision
+    endpoint: http://127.0.0.1:8081/completion
+    format: GGUF
+    quantization: Q4_K_M
+    capabilities:
+    - image-understanding
+    - visual-question-answering
+    - scanned-document-analysis
+    - pdf-understanding
+    - table-understanding
+    - engineering-drawing-analysis
+    description: Local multimodal model for images, scanned documents and visual analysis.
+    runtime:
+      context_size: 4096
+      load_policy: on_demand
+      mmproj: mmproj-Qwen3VL-8B-Instruct-F16.gguf
