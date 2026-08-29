@@ -1,3 +1,4 @@
+import React from 'react'
 import type { ReactNode } from 'react'
 import type { Permission, UserRole } from './types'
 import { getUser } from './auth'
@@ -61,5 +62,7 @@ interface PermissionGateProps {
 }
 
 export function PermissionGate({ permission, children, fallback = null }: PermissionGateProps) {
-  return currentUserHasPermission(permission) ? <>{children}</> : <>{fallback}</>
+  return currentUserHasPermission(permission)
+    ? (React.createElement(React.Fragment, null, children) as React.ReactElement)
+    : (React.createElement(React.Fragment, null, fallback) as React.ReactElement)
 }

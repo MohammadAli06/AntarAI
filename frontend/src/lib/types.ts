@@ -14,6 +14,7 @@ export type ViewId =
   | 'deliverables'
   | 'approvals'
   | 'review-overview'
+  | 'all-reviews'
   | 'approved-outputs'
   | 'audit-history'
   | 'knowledge-base'
@@ -21,6 +22,7 @@ export type ViewId =
   | 'models'
   | 'admin-overview'
   | 'audit-logs'
+  | 'alerts'
   | 'tools'
   | 'users'
   | 'policies'
@@ -100,8 +102,8 @@ export interface AgentStep {
 export interface ModelRoute {
   taskId: string
   detectedCapabilities: string[]
-  candidates: { modelName: string; role: ModelRole; score: number }[]
-  selected: { modelName: string; role: ModelRole; score: number }
+  candidates: { modelName: string; role: ModelRole; score: number; endpoint?: string }[]
+  selected: { modelName: string; role: ModelRole; score: number; endpoint?: string }
   laterStages?: { stage: string; model: string }[]
 }
 
@@ -116,13 +118,18 @@ export interface ToolRun {
   exitCode?: number
   codeFile?: string
   outputPreview?: string
+  code?: string
+  stdout?: string
+  stderr?: string
 }
 
 export interface OcrResult {
   pages: number
+  sheets?: number
   textBlocks: number
   tables: number
-  confidence: number
+  succeeded?: boolean
+  confidence?: number | null
   externalCalls: number
 }
 
@@ -193,6 +200,8 @@ export interface Task {
   createdAt: string
   updatedAt: string
   workflowTemplate?: WorkflowTemplate
+  evidenceCount?: number
+  modelRunId?: string
 }
 
 // ── SSE Event types ───────────────────────────────────────────────────────────
@@ -273,7 +282,11 @@ export interface ModelInfo {
   vramGb?: number
   contextLength?: number
   checksum?: string
+  active?: boolean
+  format?: string
+  capabilities?: string[]
 }
+
 
 export interface SovereigntyStatus {
   externalCalls: number
@@ -282,7 +295,7 @@ export interface SovereigntyStatus {
   verdict?: string
   online: boolean
   blockedAttempts?: number
-  localServices?: { port: number; name: string; address: string }[]
+  localServices?: { port: number; name: string; address: string; online?: boolean }[]
   modelIntegrity?: { modelFile: string; sha256: string; verified: boolean }[]
 }
 
@@ -292,21 +305,27 @@ export interface TaskItem {
   taskType: string
   modelUsed: string
   promptPreview: string
+  promptText?: string
+  inputFilename?: string
+  finalOutput?: string
   generatedFile?: string
   status: TaskStatus | string
   timestamp: string
   risk?: RiskLevel
   ownerName?: string
   evidenceCount?: number
+  artifactSha256?: string
+  modelRunId?: string
 }
 
 export interface UploadedFile {
   file: File
   type: UploadType
   previewUrl?: string
-  ocrStatus?: 'pending' | 'processing' | 'complete'
-  visionStatus?: 'pending' | 'processing' | 'complete'
+  ocrStatus?: 'pending' | 'processing' | 'complete' | 'failed'
+  visionStatus?: 'pending' | 'processing' | 'complete' | 'failed'
   pageCount?: number
+  sheetCount?: number
 }
 
 export interface NavItem {

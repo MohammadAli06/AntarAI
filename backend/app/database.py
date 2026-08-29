@@ -62,6 +62,9 @@ class Task(Base):
     task_type = Column(String, nullable=False)        # general / coder / vision
     model_used = Column(String, nullable=False)
     prompt_preview = Column(String, nullable=True)    # first 120 chars of message
+    prompt_text = Column(Text, nullable=True)
+    input_filename = Column(String, nullable=True)
+    final_output = Column(Text, nullable=True)
     generated_file = Column(String, nullable=True)    # generated output filename
     status = Column(String, default="pending_approval") # draft / pending_approval / approved / rejected
     timestamp = Column(DateTime, default=datetime.utcnow)
@@ -84,6 +87,10 @@ class Document(Base):
     size_bytes = Column(Integer, nullable=True)
     uploaded_by = Column(Integer, nullable=True)      # user_id
     indexed = Column(String, default="pending")       # pending / indexed / failed
+    content_hash = Column(String, nullable=True, index=True)
+    stored_filename = Column(String, nullable=True)   # collision-safe name on disk
+    chunks_indexed = Column(Integer, nullable=True)
+    failure_reason = Column(Text, nullable=True)
     upload_date = Column(DateTime, default=datetime.utcnow)
 
 
@@ -97,6 +104,7 @@ def create_tables() -> None:
     (non-destructive — preserves existing rows)."""
     Base.metadata.create_all(bind=engine)
     _migrate_task_columns()
+    _migrate_document_columns()
 
 
 def _migrate_task_columns() -> None:
@@ -119,6 +127,9 @@ def _migrate_task_columns() -> None:
             ("verification_json", "TEXT"),
             ("approved_by", "TEXT"),
             ("approved_at", "DATETIME"),
+            ("prompt_text", "TEXT"),
+            ("input_filename", "TEXT"),
+            ("final_output", "TEXT"),
         ]
         with engine.begin() as conn:
             from sqlalchemy import text
@@ -127,6 +138,33 @@ def _migrate_task_columns() -> None:
                     conn.execute(text(f"ALTER TABLE tasks ADD COLUMN {col} {col_type}"))
     except Exception:
         # Best-effort migration — don't crash startup.
+        pass
+
+
+def _migrate_document_columns() -> None:
+    """Add Knowledge Base lifecycle fields without discarding existing rows."""
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("documents"):
+            return
+        existing = {c["name"] for c in insp.get_columns("documents")}
+        additions = [
+            ("content_hash", "TEXT"),
+            ("stored_filename", "TEXT"),
+            ("chunks_indexed", "INTEGER"),
+            ("failure_reason", "TEXT"),
+        ]
+        with engine.begin() as conn:
+            from sqlalchemy import text
+            for col, col_type in additions:
+                if col not in existing:
+                    conn.execute(text(f"ALTER TABLE documents ADD COLUMN {col} {col_type}"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_documents_content_hash "
+                "ON documents (content_hash)"
+            ))
+    except Exception:
+        # Best-effort migration; startup must remain available for diagnostics.
         pass
 
 

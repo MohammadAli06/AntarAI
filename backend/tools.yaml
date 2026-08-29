@@ -1,0 +1,32 @@
+tools:
+- name: Python Sandbox
+  tool_type: sandbox
+  enabled: true
+  network_blocked: true
+  description: Hardened subprocess with network blocking, a working-directory jail,
+    and resource caps.
+- name: OCR Engine
+  tool_type: ocr
+  enabled: true
+  network_blocked: false
+  description: Tesseract on-device text extraction from images and scanned PDFs.
+- name: Document Generator
+  tool_type: document-gen
+  enabled: true
+  network_blocked: false
+  description: python-docx local Word deliverable generation.
+- name: Vector Store
+  tool_type: rag
+  enabled: true
+  network_blocked: false
+  description: ChromaDB with local sentence-transformer embeddings.
+- name: Artifact Verifier
+  tool_type: verification
+  enabled: true
+  network_blocked: false
+  description: Re-execution and structural checks with SHA-256 integrity.
+- name: Local Model
+  tool_type: model
+  enabled: true
+  network_blocked: false
+  description: Local llama.cpp inference endpoint.

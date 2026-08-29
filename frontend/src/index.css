@@ -9,43 +9,45 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --color-ink: 7 17 31;
-  --color-navy: 11 26 43;
-  --color-panel: 16 34 53;
-  --color-raised: 20 43 66;
-  --color-line: 32 57 79;
-  --color-muted: 140 161 181;
-  --color-signal: 7 103 90;
-  --color-signal-dim: 12 52 46;
-  --color-warning: 232 184 106;
-  --color-danger: 237 143 143;
-  --color-text-primary: 230 238 245;
-  --color-text-secondary: 203 216 228;
-  --color-text-tertiary: 165 184 200;
-  --color-text-faint: 117 140 159;
-  --color-action-text: 7 17 31;
-  --shadow-panel: 0 18px 48px rgb(0 0 0 / 18%);
-  --shadow-insetline: inset 0 1px 0 rgb(255 255 255 / 2.5%);
+  
+  /* ── Sovereign Dark Obsidian + Orange Theme System ── */
+  --color-ink: 10 13 18;            /* #0a0d12 - deepest dark background */
+  --color-navy: 14 18 25;           /* #0e1219 - sidebar & deep containers */
+  --color-panel: 18 23 32;          /* #121720 - panels, cards */
+  --color-raised: 24 31 43;         /* #181f2b - elevated cards, inputs */
+  --color-line: 38 48 64;           /* #263040 - sharp technical borders */
+  --color-muted: 148 163 184;       /* #94a3b8 - muted text */
+  --color-signal: 249 115 22;       /* #f97316 - vibrant sovereign orange */
+  --color-signal-dim: 51 24 12;     /* #33180c - soft warm amber/orange glow bg */
+  --color-warning: 245 158 11;      /* #f59e0b - warning amber */
+  --color-danger: 239 68 68;        /* #ef4444 - danger / high risk coral */
+  --color-text-primary: 241 245 249;/* #f1f5f9 */
+  --color-text-secondary: 203 213 225;/* #cbd5e1 */
+  --color-text-tertiary: 148 163 184;/* #94a3b8 */
+  --color-text-faint: 100 116 139;  /* #64748b */
+  --color-action-text: 10 13 18;    /* high-contrast dark text on bright orange */
+  --shadow-panel: 0 18px 48px rgb(0 0 0 / 35%);
+  --shadow-insetline: inset 0 1px 0 rgb(255 255 255 / 3%);
 }
 
 :root[data-theme='light'] {
-  --color-ink: 255 255 255;
+  --color-ink: 248 249 251;
   --color-navy: 255 255 255;
   --color-panel: 255 255 255;
-  --color-raised: 245 247 249;
-  --color-line: 226 232 238;
-  --color-muted: 82 101 121;
-  --color-signal: 7 103 90;
-  --color-signal-dim: 209 238 233;
-  --color-warning: 151 91 8;
-  --color-danger: 180 35 24;
-  --color-text-primary: 23 43 61;
-  --color-text-secondary: 42 62 79;
-  --color-text-tertiary: 72 94 112;
-  --color-text-faint: 104 123 139;
+  --color-raised: 243 244 246;
+  --color-line: 226 230 238;
+  --color-muted: 107 114 128;
+  --color-signal: 234 88 12;        /* #ea580c */
+  --color-signal-dim: 255 237 213;  /* #ffedd5 */
+  --color-warning: 217 119 6;
+  --color-danger: 220 38 38;
+  --color-text-primary: 17 24 39;
+  --color-text-secondary: 55 65 81;
+  --color-text-tertiary: 75 85 99;
+  --color-text-faint: 156 163 175;
   --color-action-text: 255 255 255;
-  --shadow-panel: 0 14px 34px rgb(28 53 74 / 10%);
-  --shadow-insetline: inset 0 1px 0 rgb(255 255 255 / 70%);
+  --shadow-panel: 0 14px 34px rgb(0 0 0 / 6%);
+  --shadow-insetline: inset 0 1px 0 rgb(255 255 255 / 80%);
 }
 
 * {
@@ -62,16 +64,17 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(circle at 78% -10%, rgb(33 79 104 / 16%), transparent 32rem),
+    radial-gradient(circle at 80% -10%, rgb(249 115 22 / 8%), transparent 36rem),
+    radial-gradient(circle at 10% 50%, rgb(249 115 22 / 4%), transparent 30rem),
     rgb(var(--color-ink));
 }
 
-/* Full-height main content — workspace uses overflow-hidden, not scroll on body */
+/* Base application root container */
 #root {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
+  width: 100%;
 }
 
 /* Allow full-height scroll within #root children when needed */
@@ -82,39 +85,41 @@ body {
 
 .landing-shell {
   min-height: 100vh;
+  width: 100%;
   background:
-    radial-gradient(circle at 15% 18%, rgb(34 73 120 / 20%), transparent 52%),
-    linear-gradient(to right, rgb(74 102 130 / 11%) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(74 102 130 / 10%) 1px, transparent 1px),
+    radial-gradient(circle at 15% 18%, rgb(249 115 22 / 12%), transparent 48%),
+    radial-gradient(circle at 85% 65%, rgb(249 115 22 / 8%), transparent 45%),
+    linear-gradient(to right, rgb(255 255 255 / 3%) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 3%) 1px, transparent 1px),
     rgb(var(--color-navy));
-  background-size: auto, 40px 40px, 40px 40px, auto;
+  background-size: auto, auto, 36px 36px, 36px 36px, auto;
 }
 
 /* ── Light mode: structural backgrounds ────────────────────────────────── */
 :root[data-theme='light'] body {
-  background: #f1f4f8 !important;
+  background: #f4f6f9 !important;
 }
 
 :root[data-theme='light'] .landing-shell {
-  background: linear-gradient(135deg, #f0f4f8 0%, #e8edf3 100%) !important;
+  background: linear-gradient(135deg, #f8f9fb 0%, #edf1f7 100%) !important;
   background-image: none !important;
 }
 
 :root[data-theme='light'] html,
 :root[data-theme='light'] #root {
-  background: #f1f4f8 !important;
+  background: #f4f6f9 !important;
 }
 
-/* Header: override the dark bg-ink/90 + blue border */
+/* Header: override in light mode */
 :root[data-theme='light'] header {
   background-color: rgba(255, 255, 255, 0.96) !important;
-  border-bottom-color: rgb(214 220 228) !important;
+  border-bottom-color: rgb(226 230 238) !important;
 }
 
-/* Sidebar: white card with a clean border */
+/* Sidebar in light mode */
 :root[data-theme='light'] aside {
   background-color: #ffffff !important;
-  border-right-color: rgb(214 220 228) !important;
+  border-right-color: rgb(226 230 238) !important;
 }
 
 /* Main content area panels */
@@ -126,7 +131,7 @@ body {
 :root[data-theme='light'] section.panel-surface,
 :root[data-theme='light'] div.panel-surface {
   background-color: #ffffff !important;
-  border-color: rgb(214 220 228) !important;
+  border-color: rgb(226 230 238) !important;
 }
 
 :root[data-theme='light'] .bg-raised,
@@ -136,52 +141,39 @@ body {
 :root[data-theme='light'] input[type='text'],
 :root[data-theme='light'] input:not([type]) {
   background-color: #ffffff !important;
-  border-color: rgb(214 220 228) !important;
+  border-color: rgb(226 230 238) !important;
 }
 
-/* Inline bg-ink with alpha (e.g., bg-ink/35, bg-ink/40, bg-ink/20) */
+/* Inline bg-ink with alpha */
 :root[data-theme='light'] [class*='bg-ink\/'] {
   background-color: #ffffff !important;
-  border-color: rgb(214 220 228) !important;
+  border-color: rgb(226 230 238) !important;
 }
 
-/* ── Light mode: remove ALL neon glow effects ───────────────────────────── */
-/* The status dot glow `shadow-[0_0_8px_rgba(84,214,197,0.8)]` is hardcoded */
-:root[data-theme='light'] [class*='shadow-[0_0'] {
-  box-shadow: none !important;
-}
-
-/* ShieldCheck icon container glow */
-:root[data-theme='light'] .text-signal.shadow-\[0_0_26px_rgba\(84\,214\,197\,0\.15\)\] {
-  box-shadow: 0 0 0 1px rgb(var(--color-signal) / 0.2) !important;
-}
-
-/* ── Light mode: signal / teal accent adjustments ───────────────────────── */
-/* signal color in light = 9 119 109 (dark teal) — text is fine */
-/* signal-dim in light = 217 241 237 — slightly too subtle, boost slightly */
+/* ── Light mode: signal / orange accent adjustments ─────────────────────── */
 :root[data-theme='light'] .bg-signal-dim\/55,
 :root[data-theme='light'] .bg-signal-dim\/45,
-:root[data-theme='light'] .bg-signal-dim\/40 {
-  background-color: rgb(209 238 233) !important;
+:root[data-theme='light'] .bg-signal-dim\/40,
+:root[data-theme='light'] .bg-signal-dim\/35 {
+  background-color: rgb(255 237 213) !important;
 }
 
 /* Sidebar logo badge */
 :root[data-theme='light'] .bg-signal-dim\/55.border-signal\/40,
 :root[data-theme='light'] .border-signal\/40 {
-  border-color: rgb(var(--color-signal) / 0.25) !important;
+  border-color: rgb(var(--color-signal) / 0.28) !important;
 }
 
-/* ── Light mode: StatusBadge success/loading tone ───────────────────────── */
-/* bg-signal-dim/55 + text-signal looks washed out in light — darken bg */
+/* ── Light mode: StatusBadge tone ───────────────────────────────────────── */
 :root[data-theme='light'] .border-signal\/25.bg-signal-dim\/55 {
-  background-color: rgb(220 242 238) !important;
+  background-color: rgb(255 237 213) !important;
   border-color: rgb(var(--color-signal) / 0.3) !important;
 }
 
 /* ── Light mode: sidebar nav active state ───────────────────────────────── */
 :root[data-theme='light'] button[aria-current='page'] {
-  background-color: rgb(220 242 238) !important;
-  border-color: rgb(var(--color-signal) / 0.25) !important;
+  background-color: rgb(255 237 213 / 70%) !important;
+  border-color: rgb(var(--color-signal) / 0.3) !important;
 }
 
 /* ── Light mode: role badge in sidebar ──────────────────────────────────── */
@@ -190,8 +182,9 @@ body {
 }
 
 /* ── Light mode: code/terminal areas ────────────────────────────────────── */
-:root[data-theme='light'] .bg-\[\#0a1827\] {
-  background-color: #f0f4f8 !important;
+:root[data-theme='light'] .bg-\[\#0a1827\],
+:root[data-theme='light'] .bg-\[\#0a0d12\] {
+  background-color: #f1f4f8 !important;
 }
 
 /* ── Light mode: border-line adjustments ────────────────────────────────── */
@@ -199,26 +192,27 @@ body {
 :root[data-theme='light'] .border-b.border-line,
 :root[data-theme='light'] .border-t.border-line,
 :root[data-theme='light'] .border-r.border-line {
-  border-color: rgb(214 220 228) !important;
+  border-color: rgb(226 230 238) !important;
 }
 
 /* ── Light mode: user info card in sidebar bottom ───────────────────────── */
 :root[data-theme='light'] .bg-ink\/35 {
-  background-color: #f3f6f9 !important;
-  border-color: rgb(214 220 228) !important;
+  background-color: #f3f5f8 !important;
+  border-color: rgb(226 230 238) !important;
 }
 
-/* ── Light mode: signal status dot — replace glow with subtle ring ──────── */
+/* ── Light mode: signal status dot ──────────────────────────────────────── */
 :root[data-theme='light'] .bg-signal.rounded-full,
 :root[data-theme='light'] .size-1\.5.rounded-full.bg-signal,
 :root[data-theme='light'] .rounded-full.bg-signal {
-  box-shadow: 0 0 0 2px rgb(var(--color-signal) / 0.2) !important;
+  box-shadow: 0 0 0 2px rgb(var(--color-signal) / 0.25) !important;
 }
 
 /* ── Light mode: verdict / signal-tinted banner ─────────────────────────── */
-:root[data-theme='light'] .border-signal\/20.bg-signal\/5 {
-  background-color: rgb(var(--color-signal) / 0.06) !important;
-  border-color: rgb(var(--color-signal) / 0.2) !important;
+:root[data-theme='light'] .border-signal\/20.bg-signal\/5,
+:root[data-theme='light'] .border-signal\/30.bg-signal\/5 {
+  background-color: rgb(var(--color-signal) / 0.08) !important;
+  border-color: rgb(var(--color-signal) / 0.25) !important;
 }
 
 button,
@@ -238,18 +232,18 @@ button:focus-visible,
 a:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: 3px;
+  outline: 2px solid rgb(var(--color-signal));
+  outline-offset: 2px;
 }
 
 ::selection {
-  color: rgb(var(--color-action-text));
+  color: #ffffff;
   background: rgb(var(--color-signal));
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -262,7 +256,7 @@ textarea:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--color-muted));
+  background: rgb(var(--color-signal) / 0.6);
 }
 
 @layer utilities {
@@ -271,19 +265,25 @@ textarea:focus-visible {
   .text-slate-300 { color: rgb(var(--color-text-tertiary)); }
   .text-slate-400 { color: rgb(var(--color-muted)); }
   .text-slate-500 { color: rgb(var(--color-text-faint)); }
-  .text-slate-600 { color: rgb(var(--color-text-faint) / 70%); }
-  .text-slate-700 { color: rgb(var(--color-text-faint) / 52%); }
-  .placeholder\\:text-slate-500::placeholder { color: rgb(var(--color-text-faint)); }
-  .placeholder\\:text-slate-600::placeholder { color: rgb(var(--color-text-faint) / 78%); }
-  .hover\\:text-slate-100:hover { color: rgb(var(--color-text-primary)); }
-  .hover\\:text-slate-200:hover { color: rgb(var(--color-text-secondary)); }
-  .hover\\:text-slate-300:hover { color: rgb(var(--color-text-tertiary)); }
+  .text-slate-600 { color: rgb(var(--color-text-faint) / 75%); }
+  .text-slate-700 { color: rgb(var(--color-text-faint) / 55%); }
+  .placeholder\:text-slate-500::placeholder { color: rgb(var(--color-text-faint)); }
+  .placeholder\:text-slate-600::placeholder { color: rgb(var(--color-text-faint) / 80%); }
+  .hover\:text-slate-100:hover { color: rgb(var(--color-text-primary)); }
+  .hover\:text-slate-200:hover { color: rgb(var(--color-text-secondary)); }
+  .hover\:text-slate-300:hover { color: rgb(var(--color-text-tertiary)); }
 
   /* Extra tiny leading for dense info blocks */
   .leading-3\.5 { line-height: 0.875rem; }
 
-  /* Opacity shorthand variants used in new components */
-  .bg-signal\/8 { background-color: rgb(var(--color-signal) / 8%); }
+  /* Opacity shorthand variants used in components */
+  .bg-signal\/5  { background-color: rgb(var(--color-signal) / 5%); }
+  .bg-signal\/8  { background-color: rgb(var(--color-signal) / 8%); }
+  .bg-signal\/10 { background-color: rgb(var(--color-signal) / 10%); }
+  .bg-signal\/15 { background-color: rgb(var(--color-signal) / 15%); }
+  .bg-signal\/20 { background-color: rgb(var(--color-signal) / 20%); }
+  .bg-signal\/25 { background-color: rgb(var(--color-signal) / 25%); }
+  .bg-signal\/30 { background-color: rgb(var(--color-signal) / 30%); }
   .bg-warning\/8 { background-color: rgb(var(--color-warning) / 8%); }
   .bg-danger\/8  { background-color: rgb(var(--color-danger)  / 8%); }
 }
@@ -293,13 +293,13 @@ textarea:focus-visible {
 :root[data-theme='light'] .text-slate-300 { color: rgb(var(--color-text-tertiary)) !important; }
 :root[data-theme='light'] .text-slate-400 { color: rgb(var(--color-muted)) !important; }
 :root[data-theme='light'] .text-slate-500 { color: rgb(var(--color-text-faint)) !important; }
-:root[data-theme='light'] .text-slate-600 { color: rgb(var(--color-text-faint) / 70%) !important; }
-:root[data-theme='light'] .text-slate-700 { color: rgb(var(--color-text-faint) / 52%) !important; }
-:root[data-theme='light'] .placeholder\\:text-slate-500::placeholder { color: rgb(var(--color-text-faint)) !important; }
-:root[data-theme='light'] .placeholder\\:text-slate-600::placeholder { color: rgb(var(--color-text-faint) / 78%) !important; }
-:root[data-theme='light'] .hover\\:text-slate-100:hover { color: rgb(var(--color-text-primary)) !important; }
-:root[data-theme='light'] .hover\\:text-slate-200:hover { color: rgb(var(--color-text-secondary)) !important; }
-:root[data-theme='light'] .hover\\:text-slate-300:hover { color: rgb(var(--color-text-tertiary)) !important; }
+:root[data-theme='light'] .text-slate-600 { color: rgb(var(--color-text-faint) / 75%) !important; }
+:root[data-theme='light'] .text-slate-700 { color: rgb(var(--color-text-faint) / 55%) !important; }
+:root[data-theme='light'] .placeholder\:text-slate-500::placeholder { color: rgb(var(--color-text-faint)) !important; }
+:root[data-theme='light'] .placeholder\:text-slate-600::placeholder { color: rgb(var(--color-text-faint) / 80%) !important; }
+:root[data-theme='light'] .hover\:text-slate-100:hover { color: rgb(var(--color-text-primary)) !important; }
+:root[data-theme='light'] .hover\:text-slate-200:hover { color: rgb(var(--color-text-secondary)) !important; }
+:root[data-theme='light'] .hover\:text-slate-300:hover { color: rgb(var(--color-text-tertiary)) !important; }
 
 @layer components {
   .panel-surface {
@@ -315,7 +315,7 @@ textarea:focus-visible {
   }
 
   .control-input {
-    @apply border border-line bg-ink/40 text-slate-100 placeholder:text-slate-500 transition-colors duration-150;
+    @apply border border-line bg-ink/50 text-slate-100 placeholder:text-slate-500 transition-colors duration-150;
   }
 
   .control-input:hover {

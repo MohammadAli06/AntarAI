@@ -20,6 +20,10 @@ import { ToolsView } from './ToolsView'
 import { UsersView } from './UsersView'
 import { PoliciesView } from './PoliciesView'
 import { HomeDashboard } from '../features/home/HomeDashboard'
+import { TaskListView } from './TaskListView'
+import { AuditTrailView } from './AuditTrailView'
+import { DeliverablesView } from './DeliverablesView'
+import { AlertsView } from './AlertsView'
 import { getUser, setToken, setUser } from '../lib/auth'
 import { PermissionGate } from '../lib/permissions'
 import type {
@@ -122,18 +126,25 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
     }
   }, [])
 
+  const loadModels = useCallback(async () => {
+    setLoading((c) => ({ ...c, models: true }))
+    try { setModels(await fetchModels()); setErrors((c) => c.filter((e) => e.scope !== 'models')) }
+    catch (err) { setErrors((c) => [...c.filter((e) => e.scope !== 'models'), { scope: 'models', message: err instanceof Error ? err.message : 'Models unavailable' }]) }
+    finally { setLoading((c) => ({ ...c, models: false })) }
+  }, [])
+
+  const loadTools = useCallback(async () => {
+    setLoading((c) => ({ ...c, tools: true }))
+    try { setTools(await fetchTools()) }
+    finally { setLoading((c) => ({ ...c, tools: false })) }
+  }, [])
+
   useEffect(() => {
     void Promise.allSettled([
       loadOutputs(),
       loadSovereignty(),
-      fetchModels()
-        .then(setModels)
-        .catch((err) => setErrors((c) => [...c, { scope: 'models', message: err instanceof Error ? err.message : 'Models unavailable' }]))
-        .finally(() => setLoading((c) => ({ ...c, models: false }))),
-      fetchTools()
-        .then(setTools)
-        .catch(() => { /* non-admin or unavailable */ })
-        .finally(() => setLoading((c) => ({ ...c, tools: false }))),
+      loadModels(),
+      loadTools(),
       fetchUsers()
         .then(setUsers)
         .catch(() => { /* 403 for non-admin — expected */ })
@@ -143,7 +154,7 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
         .catch(() => { /* 403 for non-admin — expected */ })
         .finally(() => setLoading((c) => ({ ...c, policies: false }))),
     ])
-  }, [loadOutputs, loadSovereignty])
+  }, [loadOutputs, loadSovereignty, loadModels, loadTools])
 
   function handleStartWorkflow(template: WorkflowTemplate) {
     setActiveTemplate(template)
@@ -174,12 +185,74 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
             sovereignty={sovereignty}
             onRefreshSovereignty={loadSovereignty}
             activeTemplate={activeTemplate}
+            onNavigate={setActiveView}
           />
         )
 
       case 'approvals':
         return <ApprovalsView />
 
+      // ── Engineer ────────────────────────────────────────────────────
+      case 'my-tasks':
+        return (
+          <TaskListView
+            scope={role === 'engineer' ? 'mine' : 'all'}
+            title={role === 'engineer' ? 'My Tasks' : 'All Tasks'}
+            description={
+              role === 'engineer'
+                ? 'Tasks you have submitted — all statuses'
+                : 'All tasks across all engineers'
+            }
+            onNavigate={setActiveView}
+          />
+        )
+
+      case 'deliverables':
+        return <DeliverablesView />
+
+      // ── Approver ────────────────────────────────────────────────────
+      case 'all-reviews':
+        return (
+          <TaskListView
+            scope="all"
+            title="All Reviews"
+            description="All tasks submitted by all engineers — review by status"
+            onNavigate={setActiveView}
+          />
+        )
+
+      case 'approved-outputs':
+        return (
+          <TaskListView
+            scope="all"
+            defaultStatus="approved"
+            title="Approved Outputs"
+            description="Tasks that have been approved and cleared for use"
+            onNavigate={setActiveView}
+          />
+        )
+
+      case 'audit-history':
+        return (
+          <AuditTrailView
+            title="Audit History"
+            description="Full audit log of all task transitions and approvals"
+          />
+        )
+
+      // ── Admin ───────────────────────────────────────────────────────
+      case 'audit-logs':
+        return (
+          <AuditTrailView
+            title="Audit Logs"
+            description="Immutable record of all AI-generated task transitions — admin view"
+          />
+        )
+
+      case 'alerts':
+        return <AlertsView />
+
+      // ── Shared ──────────────────────────────────────────────────────
       case 'knowledge-base':
         return <KnowledgeBaseView />
 
@@ -197,13 +270,15 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
             models={models}
             loading={loading.models}
             error={errors.find((e) => e.scope === 'models')?.message}
+            isAdmin={role === 'admin'}
+            onChanged={loadModels}
           />
         )
 
       case 'tools':
         return (
           <PermissionGate permission="model:read" fallback={<ForbiddenView title="Tool Registry" />}>
-            <ToolsView tools={tools} loading={loading.tools} />
+            <ToolsView tools={tools} loading={loading.tools} isAdmin={role === 'admin'} onChanged={loadTools} />
           </PermissionGate>
         )
 

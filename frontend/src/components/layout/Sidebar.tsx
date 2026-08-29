@@ -8,8 +8,6 @@ import {
   ClipboardList,
   CheckSquare,
   BookOpen,
-  Network,
-  Menu,
   PanelLeftClose,
   PanelLeftOpen,
   LogOut,
@@ -22,6 +20,9 @@ import {
   AlertTriangle,
   Bell,
   ChevronRight,
+  Plus,
+  SquareTerminal,
+  Bot,
 } from 'lucide-react'
 import { Icon } from '../ui/Icon'
 import type { UserRole, ViewId } from '../../lib/types'
@@ -45,7 +46,7 @@ type NavEntry =
 
 function getEngineerNav(): NavEntry[] {
   return [
-    { type: 'item', id: 'home', label: 'Home', icon: LayoutDashboard },
+    { type: 'item', id: 'home', label: 'System Overview', icon: LayoutDashboard },
     { type: 'item', id: 'workspace', label: 'Workspace', icon: Briefcase },
     { type: 'item', id: 'my-tasks', label: 'My Tasks', icon: ListTodo },
     { type: 'item', id: 'knowledge-base', label: 'Knowledge', icon: BookOpen },
@@ -58,7 +59,7 @@ function getApproverNav(): NavEntry[] {
   return [
     { type: 'item', id: 'review-overview', label: 'Review Overview', icon: LayoutDashboard },
     { type: 'item', id: 'approvals', label: 'Approval Queue', icon: FileCheck, badge: 4 },
-    { type: 'item', id: 'my-tasks', label: 'All Reviews', icon: ClipboardList },
+    { type: 'item', id: 'all-reviews', label: 'All Reviews', icon: ClipboardList },
     { type: 'item', id: 'knowledge-base', label: 'Knowledge', icon: BookOpen },
     { type: 'item', id: 'approved-outputs', label: 'Approved Outputs', icon: CheckSquare },
     { type: 'item', id: 'sovereignty-monitor', label: 'Sovereignty', icon: ShieldCheck },
@@ -70,9 +71,10 @@ function getAdminNav(): NavEntry[] {
   return [
     { type: 'item', id: 'admin-overview', label: 'System Overview', icon: LayoutDashboard },
     { type: 'section', label: 'Operations' },
+    { type: 'item', id: 'workspace', label: 'Workspace', icon: Briefcase },
     { type: 'item', id: 'sovereignty-monitor', label: 'Sovereignty', icon: ShieldCheck },
     { type: 'item', id: 'audit-logs', label: 'Audit Logs', icon: ScrollText },
-    { type: 'item', id: 'audit-history', label: 'Alerts', icon: AlertTriangle },
+    { type: 'item', id: 'alerts', label: 'Alerts', icon: AlertTriangle },
     { type: 'section', label: 'AI Platform' },
     { type: 'item', id: 'models', label: 'Model Registry', icon: Cpu },
     { type: 'item', id: 'tools', label: 'Tool Registry', icon: Wrench },
@@ -81,8 +83,6 @@ function getAdminNav(): NavEntry[] {
     { type: 'item', id: 'users', label: 'Users & Roles', icon: Users },
     { type: 'item', id: 'policies', label: 'Policies', icon: BarChart3 },
     { type: 'item', id: 'approvals', label: 'Approval Rules', icon: FileCheck },
-    { type: 'section', label: 'System' },
-    { type: 'item', id: 'my-tasks', label: 'Compute', icon: Settings },
   ]
 }
 
@@ -108,7 +108,7 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
       {mobileOpen && (
         <button
           aria-label="Close navigation"
-          className="fixed inset-0 z-30 bg-black/60 lg:hidden"
+          className="fixed inset-0 z-30 bg-black/70 backdrop-blur-sm lg:hidden"
           onClick={onCloseMobile}
         />
       )}
@@ -124,41 +124,33 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
             onClick={() => navigate('home')}
             aria-label="Go to home"
           >
-            <span className="relative flex size-7 shrink-0 items-center justify-center border border-signal/40 bg-signal-dim/55 text-signal">
-              <Network size={14} strokeWidth={1.8} aria-hidden="true" />
+            <span className="relative flex size-7 shrink-0 items-center justify-center rounded border border-signal/40 bg-signal-dim/55 text-signal shadow-[0_0_12px_rgba(249,115,22,0.2)]">
+              <Bot size={15} strokeWidth={1.8} aria-hidden="true" />
               <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-signal" />
             </span>
             {!collapsed && (
               <span className="min-w-0">
-                <span className="block text-xs font-bold tracking-tight text-slate-100">AntarAI</span>
-                <span className="mt-0.5 block font-mono text-[8px] uppercase tracking-[0.16em] text-muted">
-                  Sovereign Workbench
+                <span className="block text-xs font-bold tracking-tight text-slate-100">AI ORCHESTRATOR</span>
+                <span className="mt-0.5 block font-mono text-[8px] uppercase tracking-[0.16em] text-slate-500">
+                  SOVEREIGN-V1
                 </span>
               </span>
             )}
           </button>
           <button
             onClick={onCloseMobile}
-            className="flex size-9 items-center justify-center text-muted hover:text-slate-100 lg:hidden"
+            className="flex size-8 items-center justify-center text-muted hover:text-slate-100 lg:hidden"
             aria-label="Close navigation"
           >
             <Icon icon={PanelLeftClose} size={16} />
           </button>
         </div>
 
-        {/* Role badge */}
+        {/* Role status pill */}
         {!collapsed && (
-          <div className="flex items-center justify-between px-4 pt-4 pb-2">
-            <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-slate-600">Control room</span>
-            <span
-              className={`rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-wider ${
-                role === 'admin'
-                  ? 'border-danger/30 bg-danger/10 text-danger'
-                  : role === 'approver'
-                  ? 'border-warning/30 bg-warning/10 text-warning'
-                  : 'border-signal/30 bg-signal/10 text-signal'
-              }`}
-            >
+          <div className="flex items-center justify-between px-4 pt-3.5 pb-2">
+            <span className="flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-slate-400 border border-signal/30 bg-signal/8 px-2 py-0.5 rounded">
+              <span className="size-1.5 rounded-full bg-signal animate-pulse" />
               {ROLE_LABEL[role]}
             </span>
           </div>
@@ -171,7 +163,7 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
               if (collapsed) return null
               return (
                 <div key={`sec-${idx}`} className="mt-4 mb-1 px-3 first:mt-2">
-                  <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-slate-700">
+                  <span className="font-mono text-[8px] uppercase tracking-[0.18em] text-slate-600">
                     {entry.label}
                   </span>
                 </div>
@@ -183,32 +175,32 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
               <button
                 key={entry.id}
                 onClick={() => navigate(entry.id)}
-                className={`group relative flex min-h-10 w-full items-center gap-2.5 border px-3 text-left transition-colors duration-150 ${
+                className={`group relative flex min-h-10 w-full items-center gap-2.5 rounded border px-3 text-left transition-colors duration-150 ${
                   collapsed ? 'lg:justify-center lg:px-0' : ''
                 } ${
                   active
-                    ? 'border-signal/25 bg-signal-dim/40 text-slate-100'
-                    : 'border-transparent text-muted hover:border-line hover:bg-panel/60 hover:text-slate-200'
+                    ? 'border-signal/30 bg-signal/12 text-signal font-semibold shadow-[inset_0_0_12px_rgba(249,115,22,0.06)]'
+                    : 'border-transparent text-slate-400 hover:border-line hover:bg-panel/60 hover:text-slate-200'
                 }`}
                 aria-current={active ? 'page' : undefined}
                 title={collapsed ? entry.label : undefined}
               >
-                {active && <span className="absolute inset-y-2 left-0 w-0.5 bg-signal" />}
+                {active && <span className="absolute inset-y-2 left-0 w-0.5 bg-signal rounded-r" />}
                 <Icon
                   icon={entry.icon}
                   size={15}
                   className={active ? 'text-signal' : 'text-slate-500 group-hover:text-slate-300'}
                 />
                 {!collapsed && (
-                  <span className="min-w-0 flex-1 text-xs font-medium truncate">{entry.label}</span>
+                  <span className="min-w-0 flex-1 text-xs truncate">{entry.label}</span>
                 )}
                 {!collapsed && entry.badge !== undefined && entry.badge > 0 && (
-                  <span className="flex size-5 items-center justify-center rounded-full bg-warning/20 border border-warning/40 font-mono text-[8px] font-bold text-warning">
+                  <span className="flex size-5 items-center justify-center rounded-full bg-signal/20 border border-signal/40 font-mono text-[8px] font-bold text-signal">
                     {entry.badge}
                   </span>
                 )}
                 {!collapsed && active && (
-                  <Icon icon={ChevronRight} size={11} className="text-signal/50" />
+                  <Icon icon={ChevronRight} size={11} className="text-signal/70" />
                 )}
               </button>
             )
@@ -216,64 +208,65 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
         </nav>
 
         {/* Bottom section */}
-        <div className={`border-t border-line p-2 space-y-1 ${collapsed ? 'lg:px-1' : ''}`}>
-          {/* User chip */}
-          <div
-            className={`flex items-center gap-2 border border-line bg-ink/35 px-3 py-2 ${
-              collapsed ? 'lg:justify-center lg:px-0' : ''
+        <div className={`border-t border-line p-2.5 space-y-2 ${collapsed ? 'lg:px-1.5' : ''}`}>
+          {/* New Instance Button */}
+          <button
+            onClick={() => navigate('workspace')}
+            className={`flex w-full items-center justify-center gap-2 rounded bg-signal py-2 px-3 text-xs font-semibold text-action shadow-[0_0_16px_rgba(249,115,22,0.3)] transition-all hover:bg-orange-600 hover:shadow-[0_0_24px_rgba(249,115,22,0.45)] ${
+              collapsed ? 'size-10 px-0' : ''
             }`}
+            title="New Instance"
           >
-            <span className="size-1.5 rounded-full bg-signal" />
-            {!collapsed && (
-              <span className="flex-1 truncate font-mono text-[9px] uppercase tracking-[0.12em] text-muted">
-                {user?.username || 'user'}
-              </span>
-            )}
-            {!collapsed && (
-              <span className="font-mono text-[8px] text-slate-700">
-                {ROLE_LABEL[role]}
-              </span>
-            )}
+            <Icon icon={Plus} size={15} />
+            {!collapsed && <span>New Instance</span>}
+          </button>
+
+          {/* User & Controls */}
+          <div className="space-y-0.5 pt-1">
+            <button
+              onClick={() => navigate('policies')}
+              title="Operator Settings"
+              className={`flex min-h-8 w-full items-center gap-2.5 rounded px-2.5 text-xs text-slate-400 hover:bg-panel hover:text-slate-200 transition-colors ${
+                collapsed ? 'lg:justify-center lg:px-0' : ''
+              }`}
+            >
+              <Icon icon={Settings} size={13} />
+              {!collapsed && <span className="text-[11px]">Operator Settings</span>}
+            </button>
+
+            <button
+              onClick={() => navigate('tools')}
+              title="Terminal / Tools"
+              className={`flex min-h-8 w-full items-center gap-2.5 rounded px-2.5 text-xs text-slate-400 hover:bg-panel hover:text-slate-200 transition-colors ${
+                collapsed ? 'lg:justify-center lg:px-0' : ''
+              }`}
+            >
+              <Icon icon={SquareTerminal} size={13} />
+              {!collapsed && <span className="text-[11px]">Terminal</span>}
+            </button>
+
+            <button
+              onClick={onLogout}
+              title="Sign out"
+              className={`flex min-h-8 w-full items-center gap-2.5 rounded px-2.5 text-left text-xs text-slate-400 hover:bg-danger/10 hover:text-danger transition-colors ${
+                collapsed ? 'lg:justify-center lg:px-0' : ''
+              }`}
+            >
+              <Icon icon={LogOut} size={13} />
+              {!collapsed && <span className="text-[11px]">Sign out</span>}
+            </button>
+
+            <button
+              onClick={onToggle}
+              className={`hidden min-h-8 w-full items-center gap-2.5 rounded px-2.5 text-xs text-slate-500 hover:text-slate-300 lg:flex transition-colors ${
+                collapsed ? 'justify-center px-0' : ''
+              }`}
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              <Icon icon={collapsed ? PanelLeftOpen : PanelLeftClose} size={13} />
+              {!collapsed && <span className="font-mono text-[9px] uppercase tracking-wider">Collapse</span>}
+            </button>
           </div>
-
-          {/* Notification stub */}
-          <button
-            title="Notifications"
-            className={`flex min-h-9 w-full items-center gap-2.5 border border-transparent px-3 text-muted transition-colors hover:border-line hover:bg-panel/60 hover:text-slate-200 ${
-              collapsed ? 'lg:justify-center lg:px-0' : ''
-            }`}
-          >
-            <Icon icon={Bell} size={14} />
-            {!collapsed && <span className="font-mono text-[9px] uppercase tracking-[0.12em]">Notifications</span>}
-          </button>
-
-          {/* Sign out */}
-          <button
-            onClick={onLogout}
-            title="Sign out"
-            className={`flex min-h-9 w-full items-center gap-2.5 border border-transparent px-3 text-left text-muted transition-colors hover:border-danger/25 hover:bg-danger/10 hover:text-danger ${
-              collapsed ? 'lg:justify-center lg:px-0' : ''
-            }`}
-          >
-            <Icon icon={LogOut} size={14} />
-            {!collapsed && (
-              <span className="font-mono text-[9px] uppercase tracking-[0.12em]">Sign out</span>
-            )}
-          </button>
-
-          {/* Collapse toggle */}
-          <button
-            onClick={onToggle}
-            className={`hidden min-h-9 w-full items-center gap-2.5 px-3 text-muted hover:text-slate-100 lg:flex ${
-              collapsed ? 'justify-center px-0' : ''
-            }`}
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            <Icon icon={collapsed ? PanelLeftOpen : PanelLeftClose} size={14} />
-            {!collapsed && (
-              <span className="font-mono text-[9px] uppercase tracking-[0.12em]">Collapse</span>
-            )}
-          </button>
         </div>
       </aside>
     </>
@@ -284,10 +277,10 @@ export function MobileMenuButton({ onClick }: { onClick: () => void }) {
   return (
     <button
       onClick={onClick}
-      className="flex size-9 items-center justify-center border border-line bg-panel text-muted hover:text-slate-100 lg:hidden"
+      className="flex size-9 items-center justify-center rounded border border-line bg-panel text-muted hover:text-slate-100 lg:hidden"
       aria-label="Open navigation"
     >
-      <Icon icon={Menu} size={16} />
+      <Bot size={16} className="text-signal" />
     </button>
   )
 }

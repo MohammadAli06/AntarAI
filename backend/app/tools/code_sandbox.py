@@ -83,7 +83,7 @@ def _extract_code_block(text: str) -> str:
     return text.strip()
 
 
-def run_code_sandbox(code_or_response: str) -> dict:
+def run_code_sandbox(code_or_response: str, persist_artifact: bool = True) -> dict:
     """Execute Python code in a hardened, network-isolated subprocess.
 
     Returns dict: status, stdout, stderr, exit_code, code, network_blocked,
@@ -91,11 +91,15 @@ def run_code_sandbox(code_or_response: str) -> dict:
     """
     code = _extract_code_block(code_or_response)
 
-    # Persist the code as a downloadable, hashable artifact.
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    artifact_name = f"solution_{timestamp}.py"
-    artifact_path = _OUTPUTS_DIR / artifact_name
-    artifact_path.write_text(code, encoding="utf-8")
+    # Persist exactly the source that will be executed. Verification can opt
+    # out so it re-runs the already-delivered artifact without creating a
+    # second, similarly named file.
+    artifact_name: Optional[str] = None
+    if persist_artifact:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        artifact_name = f"solution_{timestamp}.py"
+        artifact_path = _OUTPUTS_DIR / artifact_name
+        artifact_path.write_text(code, encoding="utf-8")
 
     # Fresh temp jail for execution.
     jail = Path(tempfile.mkdtemp(prefix="antarai_jail_"))

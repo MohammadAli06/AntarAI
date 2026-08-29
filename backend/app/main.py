@@ -13,6 +13,7 @@ Run with:
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -35,9 +36,13 @@ from app.auth import (
     verify_password,
 )
 from app.database import Document, SessionLocal, Task, User, create_tables, get_db
+from app.models import registry as model_registry
 from app.models.registry import get_call_count, list_models
+from app.models.schemas import ModelEntry
+from app.system_log import get_recent, log_event
 from app.tools.ocr_extractor import extract_text
-from app.rag.ingestor import ingest_document
+from app.tools import registry as tool_registry
+from app.rag.ingestor import delete_document, ingest_document, search_document, search_all_documents
 from app.rag.seed_knowledge import seed_knowledge_if_empty
 from app.sovereignty.inspector import (
     count_external_calls,
@@ -90,8 +95,13 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     create_tables()
+    _repair_legacy_document_metadata()
     seed_users()
     seed_knowledge_if_empty()
+    import random, string
+    worker_id = "wkr-" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    log_event("INFO", f"Task worker initialized: {worker_id}")
+
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +121,7 @@ class LoginResponse(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
     response: str
     model_used: str
     steps: list[str]
@@ -141,7 +152,7 @@ def _save_attached_file(
     if file is None or not file.filename:
         return None, None, False
 
-    filename = file.filename
+    filename = Path(file.filename).name
     ext = Path(filename).suffix.lower()
     save_dir = (
         _IMAGES_DIR
@@ -158,10 +169,90 @@ def _save_attached_file(
         file_type=ext.lstrip("."),
         size_bytes=len(content),
         uploaded_by=current_user.id,
+        indexed="not_indexed",
+        failure_reason="Task attachment; not added to the shared Knowledge Base",
     )
     db.add(doc)
     db.commit()
     return str(dest), filename, True
+
+
+def _knowledge_file_path(doc: Document) -> Optional[Path]:
+    """Resolve a document's stored path while keeping it inside data folders."""
+    name = doc.stored_filename or doc.filename
+    if not name or Path(name).name != name:
+        return None
+    base = _IMAGES_DIR if (doc.file_type or "").lower() in {
+        "png", "jpg", "jpeg", "gif", "bmp", "tiff", "webp"
+    } else _DOCUMENTS_DIR
+    candidate = (base / name).resolve()
+    if base.resolve() not in candidate.parents:
+        return None
+    return candidate
+
+
+def _index_knowledge_document(doc: Document, path: Path, db: Session) -> dict:
+    """Move a Knowledge Base row to an explicit indexed/failed terminal state."""
+    chunks = 0
+    reason: Optional[str] = None
+    try:
+        if not tool_registry.is_tool_enabled("ocr"):
+            raise RuntimeError("OCR Engine disabled by administrator")
+        extracted = extract_text(str(path))
+        if not extracted or extracted.lstrip().startswith("["):
+            reason = extracted.strip("[] ") if extracted else "No readable text was extracted"
+            raise RuntimeError(reason)
+        result = ingest_document(text=extracted, filename=doc.filename, doc_id=doc.id)
+        chunks = int(result.get("chunks", 0))
+        if result.get("status") != "indexed" or chunks < 1:
+            reason = result.get("reason") or "Vector index did not accept any chunks"
+            raise RuntimeError(reason)
+        doc.indexed = "indexed"
+        doc.chunks_indexed = chunks
+        doc.failure_reason = None
+    except Exception as exc:
+        doc.indexed = "failed"
+        doc.chunks_indexed = 0
+        doc.failure_reason = reason or str(exc) or "Indexing failed"
+    db.commit()
+    db.refresh(doc)
+    return {
+        "indexed": doc.indexed,
+        "chunks_indexed": doc.chunks_indexed or 0,
+        "failure_reason": doc.failure_reason,
+    }
+
+
+def _repair_legacy_document_metadata() -> None:
+    """Backfill hashes and replace stale legacy pending/duplicate states."""
+    session = SessionLocal()
+    try:
+        seen: dict[str, int] = {}
+        for doc in session.query(Document).order_by(Document.id.asc()).all():
+            path = _knowledge_file_path(doc)
+            if path and path.is_file():
+                digest = doc.content_hash or hashlib.sha256(path.read_bytes()).hexdigest()
+                doc.content_hash = digest
+                canonical_id = seen.get(digest)
+                if canonical_id is not None and canonical_id != doc.id:
+                    doc.indexed = "duplicate"
+                    doc.chunks_indexed = 0
+                    doc.failure_reason = f"Duplicate of document #{canonical_id}"
+                    continue
+                seen[digest] = doc.id
+            if doc.indexed in {None, "pending", "processing", "unavailable"}:
+                doc.indexed = "failed"
+                doc.chunks_indexed = 0
+                doc.failure_reason = (
+                    doc.failure_reason
+                    or "Legacy upload did not complete indexing; use Retry indexing"
+                )
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        log_event("WARN", f"Knowledge metadata repair skipped: {exc}")
+    finally:
+        session.close()
 
 
 def _persist_task_update(task_id: int, **fields) -> None:
@@ -202,6 +293,9 @@ def _task_to_dict(t: Task, owner_name: Optional[str] = None) -> dict:
         "task_type": t.task_type,
         "model_used": t.model_used,
         "prompt_preview": t.prompt_preview,
+        "prompt_text": t.prompt_text,
+        "input_filename": t.input_filename,
+        "final_output": t.final_output,
         "generated_file": t.generated_file,
         "status": t.status,
         "timestamp": t.timestamp.isoformat() if t.timestamp else None,
@@ -294,6 +388,8 @@ async def chat(
             file_type=ext.lstrip("."),
             size_bytes=dest.stat().st_size,
             uploaded_by=current_user.id,
+            indexed="not_indexed",
+            failure_reason="Task attachment; not added to the shared Knowledge Base",
         )
         db.add(doc)
         db.commit()
@@ -315,6 +411,9 @@ async def chat(
         task_type=result.model_used,
         model_used=result.model_used,
         prompt_preview=message[:120],
+        prompt_text=message,
+        input_filename=filename,
+        final_output=result.response,
         generated_file=result.generated_file,
         status=initial_status,
     )
@@ -353,6 +452,8 @@ async def chat_stream(
         task_type="general",
         model_used="pending",
         prompt_preview=message[:120],
+        prompt_text=message,
+        input_filename=filename,
         status="planning",
     )
     db.add(task)
@@ -387,6 +488,7 @@ async def chat_stream(
                     model_run_id=data.get("modelRunId"),
                     artifact_sha256=data.get("artifactSha256"),
                     verification_json=json.dumps(data.get("verification")),
+                    final_output=data.get("response"),
                 )
             elif etype == "task.failed":
                 _persist_task_update(task_db_id, status="failed")
@@ -419,6 +521,40 @@ async def get_models(current_user: User = Depends(get_current_user)):
     return {"models": list_models()}
 
 
+@app.post("/admin/models", tags=["admin"])
+async def add_registered_model(
+    entry: ModelEntry,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    try:
+        model_registry.add_model(entry)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "added", "models": model_registry.list_models()}
+
+
+@app.delete("/admin/models/{role}", tags=["admin"])
+async def remove_registered_model(
+    role: str,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    try:
+        model_registry.remove_model(role)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"No model registered for role: {role}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "removed", "models": model_registry.list_models()}
+
+
+@app.post("/admin/models/reload", tags=["admin"])
+async def reload_registered_models(
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    model_registry.reload_models()
+    return {"status": "reloaded", "models": model_registry.list_models()}
+
+
 @app.post("/upload", tags=["files"])
 async def upload_file(
     file: UploadFile = File(...),
@@ -426,15 +562,31 @@ async def upload_file(
     db: Session = Depends(get_db),
 ):
     """Upload a file (PDF, image, etc.). Triggers local OCR + ChromaDB ingestion."""
-    filename = file.filename
+    filename = Path(file.filename or "").name
+    if not filename:
+        raise HTTPException(status_code=400, detail="A filename is required")
     ext = Path(filename).suffix.lower()
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="The uploaded file is empty")
+    content_hash = hashlib.sha256(content).hexdigest()
+    existing = db.query(Document).filter(Document.content_hash == content_hash).first()
+    if existing:
+        return {
+            "status": "duplicate",
+            "existing_doc_id": existing.id,
+            "filename": existing.filename,
+            "indexed": existing.indexed,
+            "chunks_indexed": existing.chunks_indexed or 0,
+            "failure_reason": existing.failure_reason,
+        }
     save_dir = (
         _IMAGES_DIR
         if ext in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"}
         else _DOCUMENTS_DIR
     )
-    dest = save_dir / filename
-    content = await file.read()
+    stored_filename = f"{content_hash[:16]}_{filename}"
+    dest = save_dir / stored_filename
     with open(dest, "wb") as f:
         f.write(content)
 
@@ -443,38 +595,23 @@ async def upload_file(
         file_type=ext.lstrip("."),
         size_bytes=len(content),
         uploaded_by=current_user.id,
-        indexed="pending",
+        indexed="processing",
+        content_hash=content_hash,
+        stored_filename=stored_filename,
+        chunks_indexed=0,
     )
     db.add(doc)
     db.commit()
     db.refresh(doc)
 
-    # Background: OCR → ChromaDB ingestion
-    indexed_status = "pending"
-    chunks_indexed = 0
-    try:
-        extracted = extract_text(str(dest))
-        if extracted and not extracted.startswith("["):
-            ingest_result = ingest_document(
-                text=extracted,
-                filename=filename,
-                doc_id=doc.id,
-            )
-            indexed_status = ingest_result["status"]
-            chunks_indexed = ingest_result.get("chunks", 0)
-        doc.indexed = indexed_status
-        db.commit()
-    except Exception as exc:
-        doc.indexed = "failed"
-        db.commit()
+    result = _index_knowledge_document(doc, dest, db)
 
     return {
-        "status": "uploaded",
+        "status": result["indexed"],
+        "doc_id": doc.id,
         "filename": filename,
-        "path": str(dest),
         "size_bytes": len(content),
-        "indexed": indexed_status,
-        "chunks_indexed": chunks_indexed,
+        **result,
     }
 
 
@@ -495,15 +632,43 @@ async def list_outputs(current_user: User = Depends(get_current_user)):
     return {"outputs": files}
 
 
+def _resolve_output_path(filename: str) -> Path:
+    """Resolve an output filename without permitting directory traversal."""
+    path = (_OUTPUTS_DIR / filename).resolve()
+    if _OUTPUTS_DIR.resolve() not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"File '{filename}' not found")
+    return path
+
+
+@app.get("/outputs/{filename}/preview", tags=["files"])
+async def preview_output(
+    filename: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Return a safe text preview of the exact generated artifact."""
+    path = _resolve_output_path(filename)
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".docx":
+            from docx import Document  # type: ignore
+            doc = Document(str(path))
+            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        elif suffix in {".py", ".txt", ".md", ".json", ".csv", ".yaml", ".yml"}:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        else:
+            text = "Preview is unavailable for this file type. Download the artifact to inspect it."
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not preview '{filename}': {exc}") from exc
+    return {"filename": path.name, "content": text[:50000], "truncated": len(text) > 50000}
+
+
 @app.get("/outputs/{filename}", tags=["files"])
 async def download_output(
     filename: str,
     current_user: User = Depends(get_current_user),
 ):
     """Download a generated output file."""
-    file_path = _OUTPUTS_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail=f"File '{filename}' not found")
+    file_path = _resolve_output_path(filename)
     return FileResponse(
         path=str(file_path),
         filename=filename,
@@ -532,14 +697,18 @@ async def sovereignty_status(
     external = count_external_calls()
     services = probe_local_services()
     integrity = model_integrity()
-    any_online = any(s.get("online") for s in services)
-
-    verdict = (
-        f"SOVEREIGN — {model_calls} model calls, {external} outbound, "
-        f"{outputs_count} outputs — all on-premise"
-        if external == 0
-        else f"WARNING — {external} outbound connections detected"
+    model_online = any(
+        service.get("online") and "llama.cpp" in service.get("name", "")
+        for service in services
     )
+
+    # Policy compliance and runtime availability are separate conditions.
+    if external > 0:
+        verdict = "air_gap_violated"
+    elif not model_online:
+        verdict = "model_offline"
+    else:
+        verdict = "verified"
 
     return {
         "external_calls": external,
@@ -548,15 +717,98 @@ async def sovereignty_status(
         "blocked_attempts": get_blocked_attempts(),
         "local_services": services,
         "model_integrity": integrity,
-        "online": any_online,
+        "online": model_online,
         "verdict": verdict,
     }
 
 
 
 # ---------------------------------------------------------------------------
-# Task & Approval Management (RBAC Enforced)
+# System log — live ring buffer feed for AdminHome terminal
 # ---------------------------------------------------------------------------
+
+@app.get("/system-log", tags=["admin"])
+async def system_log(
+    current_user: Principal = Depends(get_current_user),
+    limit: int = 50,
+):
+    """Return the most recent system log entries from the in-process ring buffer.
+
+    No elevated role required — same visibility scope as /sovereignty-status.
+    """
+    return {"entries": get_recent(limit)}
+
+
+# ---------------------------------------------------------------------------
+# System metrics — CPU, RAM, GPU/VRAM (orchestrator node only, Option A)
+# ---------------------------------------------------------------------------
+
+def _get_system_metrics() -> dict:
+    """Read live CPU%, RAM%, and GPU/VRAM from the orchestrator node.
+
+    psutil covers CPU and RAM (already a dependency).
+    pynvml covers GPU/VRAM; gracefully absent if no NVIDIA GPU or pynvml not installed.
+    Labelled as 'Orchestrator node' — honest about single-node scope.
+    """
+    cpu_percent: float = 0.0
+    ram_used: int = 0
+    ram_total: int = 1
+    gpu_percent: float = 0.0
+    vram_used: int = 0
+    vram_total: int = 1
+    gpu_available = False
+    gpu_name = "N/A"
+
+    try:
+        import psutil  # type: ignore
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        ram_used = mem.used
+        ram_total = mem.total
+    except Exception:
+        pass
+
+    try:
+        import pynvml  # type: ignore
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        gpu_name = pynvml.nvmlDeviceGetName(handle)
+        if isinstance(gpu_name, bytes):
+            gpu_name = gpu_name.decode("utf-8", errors="replace")
+        gpu_percent = float(util.gpu)
+        vram_used = info.used
+        vram_total = info.total
+        gpu_available = True
+        pynvml.nvmlShutdown()
+    except Exception:
+        gpu_available = False
+
+    return {
+        "node": "Orchestrator",
+        "cpu_percent": round(cpu_percent, 1),
+        "ram_used_bytes": ram_used,
+        "ram_total_bytes": ram_total,
+        "ram_percent": round(ram_used / ram_total * 100, 1) if ram_total else 0,
+        "gpu_available": gpu_available,
+        "gpu_name": gpu_name,
+        "gpu_percent": round(gpu_percent, 1),
+        "vram_used_bytes": vram_used,
+        "vram_total_bytes": vram_total,
+        "vram_percent": round(vram_used / vram_total * 100, 1) if vram_total else 0,
+    }
+
+
+@app.get("/system-metrics", tags=["admin"])
+async def system_metrics(
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    """Live CPU / RAM / GPU metrics from the orchestrator node."""
+    return _get_system_metrics()
+
+
+
 
 @app.get("/tasks/mine", tags=["history"])
 async def get_my_tasks(
@@ -724,84 +976,31 @@ async def switch_demo_role(
 # Admin control plane — Tools / Users / Policies
 # ---------------------------------------------------------------------------
 
-def _tool_status(name: str, tool_type: str, available: bool) -> dict:
-    return {
-        "name": name,
-        "toolType": tool_type,
-        "status": "online" if available else "offline",
-        "networkBlocked": tool_type == "sandbox",
-        "description": _tool_description(name),
-    }
-
-
-def _tool_description(name: str) -> str:
-    return {
-        "Python Sandbox": "Hardened subprocess — network blocked, cwd jail, resource caps.",
-        "OCR Engine": "Tesseract — on-device text extraction from images & scanned PDFs.",
-        "Document Generator": "python-docx — MRPL-branded Word deliverables.",
-        "Vector Store": "ChromaDB + all-MiniLM-L6-v2 — local embeddings & retrieval.",
-        "Artifact Verifier": "Re-execution + structural checks with SHA-256 integrity.",
-        "Local Model": "Qwen3-8B-Q4_K_M via llama.cpp — air-gapped inference.",
-    }.get(name, "")
-
-
 @app.get("/tools", tags=["admin"])
 async def list_tools(current_user: Principal = Depends(get_current_user)):
     """Tool registry with real availability status."""
-    tools = []
+    return {"tools": tool_registry.list_tools()}
 
-    # Python sandbox — can we import it?
-    sandbox_ok = True
+
+@app.post("/admin/tools/{name}/toggle", tags=["admin"])
+async def toggle_registered_tool(
+    name: str,
+    enabled: bool,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
     try:
-        from app.tools.code_sandbox import run_code_sandbox  # noqa: F401
-    except Exception:
-        sandbox_ok = False
-    tools.append(_tool_status("Python Sandbox", "sandbox", sandbox_ok))
+        tool_registry.set_enabled(name, enabled)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Tool not found: {name}") from exc
+    return {"status": "updated", "tools": tool_registry.list_tools()}
 
-    # OCR engine — tesseract binary present?
-    ocr_ok = False
-    try:
-        from app.tools.ocr_extractor import _TESSERACT_AVAILABLE  # type: ignore
-        ocr_ok = bool(_TESSERACT_AVAILABLE)
-    except Exception:
-        ocr_ok = False
-    tools.append(_tool_status("OCR Engine", "ocr", ocr_ok))
 
-    # Document generator — python-docx importable?
-    doc_ok = True
-    try:
-        import docx  # type: ignore  # noqa: F401
-    except Exception:
-        doc_ok = False
-    tools.append(_tool_status("Document Generator", "document-gen", doc_ok))
-
-    # Vector store — chromadb initialised with content?
-    rag_ok = False
-    try:
-        from app.rag.ingestor import _collection, _init_chroma  # type: ignore
-        rag_ok = bool(_init_chroma() and _collection is not None and _collection.count() > 0)
-    except Exception:
-        rag_ok = False
-    tools.append(_tool_status("Vector Store", "rag", rag_ok))
-
-    # Verifier
-    verify_ok = True
-    try:
-        from app.tools.verifier import verify_artifact  # noqa: F401
-    except Exception:
-        verify_ok = False
-    tools.append(_tool_status("Artifact Verifier", "verification", verify_ok))
-
-    # Local model — health probe via registry
-    model_ok = False
-    try:
-        models = list_models()
-        model_ok = any(m.get("status") == "online" for m in models)
-    except Exception:
-        model_ok = False
-    tools.append(_tool_status("Local Model", "model", model_ok))
-
-    return {"tools": tools}
+@app.post("/admin/tools/reload", tags=["admin"])
+async def reload_registered_tools(
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    tool_registry.reload_tools()
+    return {"status": "reloaded", "tools": tool_registry.list_tools()}
 
 
 @app.get("/users", tags=["admin"])
@@ -852,11 +1051,71 @@ async def list_documents(
                 "file_type": d.file_type,
                 "size_bytes": d.size_bytes,
                 "indexed": d.indexed,
+                "chunks_indexed": d.chunks_indexed or 0,
+                "failure_reason": d.failure_reason,
                 "upload_date": d.upload_date.isoformat() if d.upload_date else None,
             }
             for d in docs
         ]
     }
+
+
+@app.get("/documents/search", tags=["knowledge"])
+async def global_documents_search(
+    query: str,
+    current_user: Principal = Depends(get_current_user),
+):
+    """Global RAG vector search across all indexed Knowledge Base documents."""
+    q = query.strip()
+    if len(q) < 2:
+        return {"query": q, "matches": []}
+    return {"query": q, "matches": search_all_documents(q, n_results=20)}
+
+
+@app.get("/documents/{doc_id}/search", tags=["knowledge"])
+async def search_within_document(
+    doc_id: int,
+    query: str,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Search only the vector chunks belonging to one indexed document."""
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc.indexed == "duplicate":
+        raise HTTPException(status_code=409, detail=doc.failure_reason or "Duplicate document")
+    if doc.indexed != "indexed":
+        raise HTTPException(status_code=409, detail=f"Document is {doc.indexed}, not indexed")
+    if len(query.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Search query must contain at least 2 characters")
+    return {"doc_id": doc_id, "query": query.strip(), "matches": search_document(doc_id, query)}
+
+
+@app.post("/documents/{doc_id}/reindex", tags=["knowledge"])
+async def reindex_knowledge_document(
+    doc_id: int,
+    current_user: Principal = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """Retry extraction and indexing for a failed or legacy pending document."""
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc.indexed == "duplicate":
+        raise HTTPException(status_code=409, detail=doc.failure_reason or "Duplicate document")
+    path = _knowledge_file_path(doc)
+    if path is None or not path.is_file():
+        doc.indexed = "failed"
+        doc.failure_reason = "The original uploaded file is no longer present on disk"
+        doc.chunks_indexed = 0
+        db.commit()
+        raise HTTPException(status_code=409, detail=doc.failure_reason)
+    doc.indexed = "processing"
+    doc.failure_reason = None
+    db.commit()
+    result = _index_knowledge_document(doc, path, db)
+    return {"status": result["indexed"], "doc_id": doc.id, **result}
 
 
 @app.delete("/knowledge-base/{doc_id}", tags=["knowledge"])
@@ -870,7 +1129,19 @@ async def delete_knowledge_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    delete_document(doc_id)
+    path = _knowledge_file_path(doc)
+    if path and path.is_file():
+        # Old rows may share an unhashed filename; retain the file while another
+        # row still references it.
+        shared = False
+        if not doc.stored_filename:
+            shared = db.query(Document).filter(
+                Document.id != doc.id,
+                Document.filename == doc.filename,
+            ).first() is not None
+        if not shared:
+            path.unlink()
     db.delete(doc)
     db.commit()
     return {"status": "deleted", "doc_id": doc_id}
-

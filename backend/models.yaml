@@ -1,20 +1,19 @@
 general:
-  name: "Qwen3-8B-Q4_K_M"
-  model_id: "Qwen/Qwen3-8B-GGUF"
-  role: "general"
-  endpoint: "http://127.0.0.1:8081/completion"
-  description: "General reasoning, Q&A, document analysis — Qwen3-8B Q4_K_M quantized"
-
+  name: Qwen3-8B-Q4_K_M
+  model_id: Qwen/Qwen3-8B-GGUF
+  role: general
+  endpoint: http://127.0.0.1:8081/completion
+  description: General reasoning, Q&A, document analysis — Qwen3-8B Q4_K_M quantized
 coder:
-  name: "Qwen3-8B-Q4_K_M"
-  model_id: "Qwen/Qwen3-8B-GGUF"
-  role: "coder"
-  endpoint: "http://127.0.0.1:8081/completion"
-  description: "Code generation & debugging (same model, routed by prompt — dedicated coder model next)"
-
+  name: Qwen3-8B-Q4_K_M
+  model_id: Qwen/Qwen3-8B-GGUF
+  role: coder
+  endpoint: http://127.0.0.1:8081/completion
+  description: Code generation & debugging (same model, routed by prompt — dedicated
+    coder model next)
 vision:
-  name: "Qwen3-8B-Q4_K_M"
-  model_id: "Qwen/Qwen3-8B-GGUF"
-  role: "vision"
-  endpoint: "http://127.0.0.1:8081/completion"
-  description: "Document extraction & OCR analysis — Qwen3-8B with Tesseract pre-processing"
+  name: Qwen3-8B-Q4_K_M
+  model_id: Qwen/Qwen3-8B-GGUF
+  role: vision
+  endpoint: http://127.0.0.1:8081/completion
+  description: Document extraction & OCR analysis — Qwen3-8B with Tesseract pre-processing

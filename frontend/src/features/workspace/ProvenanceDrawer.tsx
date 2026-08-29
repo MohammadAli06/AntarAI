@@ -1,6 +1,6 @@
 import { X, ArrowDown } from 'lucide-react'
 import { Icon } from '../../components/ui/Icon'
-import type { AgentStep, Artifact, EvidenceSource, Task, VerificationResult } from '../../lib/types'
+import type { AgentStep, Artifact, EvidenceSource, SovereigntyStatus, Task, VerificationResult } from '../../lib/types'
 
 interface ProvenanceDrawerProps {
   open: boolean
@@ -10,7 +10,7 @@ interface ProvenanceDrawerProps {
   sources: EvidenceSource[]
   artifacts: Artifact[]
   verification?: VerificationResult
-  usedMock?: boolean
+  sovereignty?: SovereigntyStatus | null
 }
 
 interface ProvenanceRow {
@@ -28,7 +28,7 @@ export function ProvenanceDrawer({
   sources,
   artifacts,
   verification,
-  usedMock,
+  sovereignty,
 }: ProvenanceDrawerProps) {
   if (!open) return null
 
@@ -48,8 +48,8 @@ export function ProvenanceDrawer({
       ? [{
           label: 'Extraction',
           value: 'Local OCR',
-          sub: `${ocrStep.ocrResult?.pages ?? 0} pages · ${Math.round((ocrStep.ocrResult?.confidence ?? 0) * 100)}% confidence · 0 external calls`,
-          color: 'text-signal',
+          sub: `${ocrStep.ocrResult?.pages ?? 0} pages · ${ocrStep.ocrResult?.sheets ?? 0} sheets · ${ocrStep.ocrResult?.succeeded ? 'succeeded' : 'failed'}`,
+          color: ocrStep.ocrResult?.succeeded ? 'text-signal' : 'text-danger',
         }]
       : []),
     ...(sources.length > 0
@@ -64,7 +64,7 @@ export function ProvenanceDrawer({
       ? [{
           label: 'Model',
           value: `${routeStep.modelRoute.selected.modelName}`,
-          sub: `Locally hosted · Match score ${Math.round(routeStep.modelRoute.selected.score * 100)}%`,
+          sub: `${routeStep.modelRoute.selected.endpoint ?? 'Local endpoint'} · Route score ${Math.round(routeStep.modelRoute.selected.score * 100)}%`,
           color: 'text-signal',
         }]
       : modelStep
@@ -87,15 +87,15 @@ export function ProvenanceDrawer({
       ? [{
           label: 'Verification',
           value: `${verification.checks.filter((c) => c.passed).length}/${verification.checks.length} checks passed`,
-          sub: `Confidence ${Math.round(verification.confidence * 100)}%`,
+          sub: `Verification score ${Math.round(verification.confidence * 100)}%`,
           color: verification.passed ? 'text-signal' : 'text-danger',
         }]
       : []),
     {
       label: 'Network',
-      value: '0 external connections',
-      sub: 'Air-gapped execution · Zero egress',
-      color: 'text-signal',
+      value: `${sovereignty?.externalCalls ?? 'Unknown'} external connections`,
+      sub: sovereignty?.verdict ?? 'Live sovereignty status unavailable',
+      color: sovereignty?.externalCalls === 0 ? 'text-signal' : 'text-warning',
     },
     ...(primaryArtifact
       ? [{
@@ -152,12 +152,6 @@ export function ProvenanceDrawer({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-5">
-          {usedMock && (
-            <div className="mb-4 border border-warning/30 bg-warning/8 px-3 py-2 text-[9px] text-warning">
-              Demo mode — mock execution data shown
-            </div>
-          )}
-
           <div className="space-y-0">
             {rows.map((row, i) => (
               <div key={i} className="relative">

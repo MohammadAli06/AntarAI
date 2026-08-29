@@ -28,8 +28,10 @@ from app.router.router import classify_task
 from app.tools.doc_generator import generate_approval_note
 from app.tools.code_sandbox import run_code_sandbox
 from app.tools.verifier import verify_artifact
+from app.tools.registry import is_tool_enabled
 from app.rag.ingestor import retrieve_sources
 from app.sovereignty.inspector import sha256_file, record_blocked_attempt
+from app.system_log import log_event
 from app.tools.ocr_extractor import (
     build_extraction_prompt,
     extract_text,
@@ -94,37 +96,54 @@ def run_agent_stream(
 
     # ── 1. Task created ───────────────────────────────────────────────────
     yield _ev("task.created", {"prompt": message})
+    yield _ev("plan.created", {
+        "objective": message,
+        "stages": (["route", "ocr"] if has_file else ["route"]) + ["knowledge", "model", "verification", "artifact", "approval"],
+    }, step_id="plan")
 
     # ── 2. Router ─────────────────────────────────────────────────────────
     yield _ev("router.started", step_id="route")
     role = classify_task(message, has_file, filename)
     model_info = get_model_for_role(role)
     model_route = _build_model_route(message, has_file, role, model_info)
+    log_event("INFO", f"Router → role={role} model={model_info['name']}")
     yield _ev("router.completed", {
-        "role": role, "model": model_info["name"], "modelRoute": model_route,
+        "role": role,
+        "model": model_info["name"],
+        "endpoint": model_info.get("endpoint"),
+        "risk": _risk_for(role, False),
+        "routeReason": f"Matched the request to the {role} capability route",
+        "modelRoute": model_route,
     }, step_id="route")
 
     # ── 3. OCR (if file) ──────────────────────────────────────────────────
     extracted_text = ""
     if has_file and file_path:
         yield _ev("ocr.started", step_id="ocr")
-        try:
-            extracted_text = extract_text(file_path)
-            yield _ev("ocr.completed", {"ocrResult": _build_ocr_result(extracted_text, filename)},
-                      step_id="ocr")
-        except Exception as exc:
-            logger.warning("OCR failed: %s", exc)
-            extracted_text = f"[OCR unavailable: {exc}]"
-            yield _ev("ocr.completed", {"ocrResult": _build_ocr_result(extracted_text, filename, ok=False)},
-                      step_id="ocr")
+        if not is_tool_enabled("ocr"):
+            extracted_text = "[OCR disabled by administrator]"
+            yield _ev("ocr.completed", {"ocrResult": _build_ocr_result(extracted_text, filename, ok=False), "reason": "OCR disabled by administrator"}, step_id="ocr")
+        else:
+            try:
+                extracted_text = extract_text(file_path)
+                ocr_ok = bool(extracted_text.strip()) and not extracted_text.lstrip().startswith("[")
+                yield _ev("ocr.completed", {"ocrResult": _build_ocr_result(extracted_text, filename, ok=ocr_ok), "reason": None if ocr_ok else extracted_text.strip("[] ")},
+                          step_id="ocr")
+            except Exception as exc:
+                logger.warning("OCR failed: %s", exc)
+                extracted_text = f"[OCR unavailable: {exc}]"
+                yield _ev("ocr.completed", {"ocrResult": _build_ocr_result(extracted_text, filename, ok=False)},
+                          step_id="ocr")
 
     # ── 4. RAG retrieval ──────────────────────────────────────────────────
     yield _ev("knowledge.started", step_id="knowledge")
     sources: list[dict] = []
-    try:
-        sources = retrieve_sources(message, n_results=3)
-    except Exception as exc:
-        logger.warning("RAG retrieval failed: %s", exc)
+    if is_tool_enabled("rag"):
+        try:
+            sources = retrieve_sources(message, n_results=3)
+        except Exception as exc:
+            logger.warning("RAG retrieval failed: %s", exc)
+    log_event("RETR", f"Vector search complete — {len(sources)} sources retrieved")
     yield _ev("knowledge.completed", {"sources": sources}, step_id="knowledge")
 
     # ── 5. Build prompt (inject RAG context) ──────────────────────────────
@@ -135,14 +154,23 @@ def run_agent_stream(
 
     # ── 6. Model call ─────────────────────────────────────────────────────
     yield _ev("model.started", {"model": model_info["name"], "role": role}, step_id="model")
+    if not is_tool_enabled("model"):
+        error = "Local Model disabled by administrator"
+        yield _ev("model.failed", {"error": error}, step_id="model")
+        yield _ev("task.failed", {"error": error, "response": f"**Model Error:** {error}"})
+        return
+    _model_start = time.monotonic()
     try:
         n_predict = 1024 if role == "coder" else 512
         model_response = call_model(role, prompt, n_predict=n_predict)
     except RuntimeError as exc:
+        log_event("ERROR", f"Model call failed: {exc}")
         yield _ev("model.failed", {"error": str(exc)}, step_id="model")
         yield _ev("task.failed", {"error": str(exc), "response":
             f"**Model Error:** {exc}\n\nEnsure llama-server is running on 127.0.0.1:8081."})
         return
+    _model_ms = int((time.monotonic() - _model_start) * 1000)
+    log_event("INFER", f"Inference complete ({model_info['name']}). Latency: {_model_ms/1000:.2f}s  chars: {len(model_response)}")
     yield _ev("model.completed", {
         "response": model_response, "chars": len(model_response),
         "detail": f"{model_info['name']} · {role}", "extractedFields": None,
@@ -159,65 +187,68 @@ def run_agent_stream(
     tool_runs: list[dict] = []
     if any(kw in msg_lower for kw in _DOC_KEYWORDS):
         yield _ev("tool.started", {"toolName": "Document Generator"}, step_id="tool-doc")
-        try:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            doc_filename = f"approval_note_{timestamp}.docx"
-            generate_approval_note(
-                content=model_response,
-                filename=doc_filename,
-                extracted_fields=extracted_fields,
-            )
-            generated_file = doc_filename
-            tool_runs.append({
-                "toolName": "Document Generator", "toolType": "document-gen",
-                "status": "completed", "networkBlocked": True,
-                "outputPreview": doc_filename,
-            })
-            yield _ev("tool.completed", {"toolRun": tool_runs[-1]}, step_id="tool-doc")
-        except Exception as exc:
-            logger.error("Document generation failed: %s", exc)
-            yield _ev("tool.failed", {"toolRun": {
-                "toolName": "Document Generator", "toolType": "document-gen",
-                "status": "failed", "networkBlocked": True, "error": str(exc),
-            }}, step_id="tool-doc")
+        if not is_tool_enabled("document-gen"):
+            yield _ev("tool.failed", {"toolRun": {"toolName": "Document Generator", "toolType": "document-gen", "status": "failed", "networkBlocked": True, "error": "Document Generator disabled by administrator"}}, step_id="tool-doc")
+        else:
+            try:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                doc_filename = f"approval_note_{timestamp}.docx"
+                generate_approval_note(content=model_response, filename=doc_filename, extracted_fields=extracted_fields)
+                generated_file = doc_filename
+                tool_runs.append({"toolName": "Document Generator", "toolType": "document-gen", "status": "completed", "networkBlocked": True, "outputPreview": doc_filename})
+                log_event("TOOL", f"Document generated: {doc_filename}")
+                yield _ev("tool.completed", {"toolRun": tool_runs[-1]}, step_id="tool-doc")
+            except Exception as exc:
+                logger.error("Document generation failed: %s", exc)
+                yield _ev("tool.failed", {"toolRun": {"toolName": "Document Generator", "toolType": "document-gen", "status": "failed", "networkBlocked": True, "error": str(exc)}}, step_id="tool-doc")
 
     # ── 9. Code sandbox ──────────────────────────────────────────────────
     sandbox_result: Optional[dict] = None
     if any(kw in msg_lower for kw in _SANDBOX_KEYWORDS) and role == "coder":
         yield _ev("tool.started", {"toolName": "Python Sandbox"}, step_id="tool-sandbox")
-        sandbox_result = run_code_sandbox(model_response)
-        if sandbox_result.get("egress_attempted"):
-            record_blocked_attempt()
-        tool_run = {
-            "toolName": "Python Sandbox", "toolType": "sandbox",
-            "status": "completed" if sandbox_result["status"] == "passed" else "failed",
-            "networkBlocked": True,
-            "exitCode": sandbox_result.get("exit_code"),
-            "codeFile": sandbox_result.get("code_file"),
-            "outputPreview": (sandbox_result.get("stdout", "") or "")[:200],
-            "durationMs": sandbox_result.get("duration_ms"),
-        }
-        tool_runs.append(tool_run)
-        yield _ev("tool.completed", {"toolRun": tool_run}, step_id="tool-sandbox")
-        if not generated_file and sandbox_result.get("code_file"):
-            generated_file = sandbox_result["code_file"]
+        if not is_tool_enabled("sandbox"):
+            yield _ev("tool.failed", {"toolRun": {"toolName": "Python Sandbox", "toolType": "sandbox", "status": "failed", "networkBlocked": True, "error": "Python Sandbox disabled by administrator"}}, step_id="tool-sandbox")
+            sandbox_result = None
+        else:
+            sandbox_result = run_code_sandbox(model_response)
+        if sandbox_result is None:
+            pass
+        else:
+            if sandbox_result.get("egress_attempted"):
+                record_blocked_attempt()
+            tool_run = {"toolName": "Python Sandbox", "toolType": "sandbox", "status": "completed" if sandbox_result["status"] == "passed" else "failed", "networkBlocked": True, "exitCode": sandbox_result.get("exit_code"), "codeFile": sandbox_result.get("code_file"), "code": sandbox_result.get("code"), "stdout": sandbox_result.get("stdout"), "stderr": sandbox_result.get("stderr"), "outputPreview": (sandbox_result.get("stdout", "") or sandbox_result.get("stderr", "") or "")[:200], "durationMs": sandbox_result.get("duration_ms")}
+            tool_runs.append(tool_run)
+            yield _ev("tool.completed", {"toolRun": tool_run}, step_id="tool-sandbox")
+            if not generated_file and sandbox_result.get("code_file"):
+                generated_file = sandbox_result["code_file"]
 
     # ── 10. Verification ─────────────────────────────────────────────────
     yield _ev("verification.started", step_id="verification")
-    try:
-        verification = verify_artifact(
-            artifact_path=generated_file,
-            model_response=model_response,
-            role=role,
-            sources_count=len(sources),
-            task_type=role,
-        )
-    except Exception as exc:
-        logger.error("Verification failed: %s", exc)
-        verification = {
-            "passed": False, "confidence": 0.0,
-            "summary": f"Verification error: {exc}", "checks": [],
-        }
+    if not is_tool_enabled("verification"):
+        verification = {"passed": False, "confidence": 0.0, "summary": "Artifact Verifier disabled by administrator", "checks": []}
+    else:
+        try:
+            verification = verify_artifact(
+                artifact_path=generated_file,
+                model_response=model_response,
+                role=role,
+                sources_count=len(sources),
+                task_type=role,
+                model_name=model_info["name"],
+                model_endpoint=model_info.get("endpoint", "local"),
+            )
+        except Exception as exc:
+            logger.error("Verification failed: %s", exc)
+            verification = {
+                "passed": False, "confidence": 0.0,
+                "summary": f"Verification error: {exc}", "checks": [],
+            }
+    conf = verification.get('confidence', 0)
+    passed = verification.get('passed', False)
+    log_event(
+        "INFO" if passed else "WARN",
+        f"Verification {'PASS' if passed else 'FAIL'} — confidence={conf:.2f}",
+    )
     yield _ev("verification.completed", {"verification": verification}, step_id="verification")
 
     # ── 11. Artifact ─────────────────────────────────────────────────────
@@ -227,7 +258,21 @@ def run_agent_stream(
         yield _ev("artifact.created", {"artifact": artifact}, step_id="artifact")
 
     # ── 12. Approval gate ────────────────────────────────────────────────
-    requires_approval = bool(generated_file) and role != "coder"
+    # Policy (policies.yaml): auto_approve requires risk=low, all checks
+    # passed, and confidence >= 0.90. Everything else — high/critical risk,
+    # failed checks, low confidence — goes to the Approval Queue.
+    # NOTE: coder tasks are classified as medium risk by _risk_for(), so
+    # they already fail the max_risk:low threshold without a special case.
+    risk = _risk_for(role, bool(generated_file))
+    requires_approval = not (
+        risk == "low"
+        and verification.get("passed", False)
+        and verification.get("confidence", 0) >= 0.90
+    )
+    if requires_approval:
+        log_event("WARN", f"Task requires approval — risk={risk} confidence={verification.get('confidence', 0):.2f}")
+    else:
+        log_event("INFO", f"Task auto-approved — risk={risk} confidence={verification.get('confidence', 0):.2f}")
     final_status = "pending_approval" if requires_approval else "completed"
 
     result_payload = {
@@ -235,9 +280,9 @@ def run_agent_stream(
         "generatedFile": generated_file,
         "modelUsed": model_info["name"],
         "role": role,
-        "risk": _risk_for(role, bool(generated_file)),
+        "risk": risk,
         "evidenceCount": len(sources),
-        "modelRunId": f"{model_info['name']}@127.0.0.1:8081",
+        "modelRunId": f"{model_info['name']}@{model_info.get('endpoint', 'local')}",
         "artifactSha256": artifact.get("sha256") if artifact else None,
         "verification": verification,
         "status": final_status,
@@ -306,11 +351,20 @@ def _build_model_route(message: str, has_file: bool, role: str, model_info: dict
         caps.append("Document generation")
     caps.append("Reasoning")
 
-    candidates = [
-        {"modelName": "Qwen3-8B-Q4_K_M", "role": "vision", "score": 0.94 if has_file else 0.55},
-        {"modelName": "Qwen3-8B-Q4_K_M", "role": "coder", "score": 0.88 if "code" in msg_lower or "python" in msg_lower else 0.40},
-        {"modelName": "Qwen3-8B-Q4_K_M", "role": "general", "score": 0.76},
-    ]
+    scores = {
+        "vision": 0.94 if has_file else 0.35,
+        "coder": 0.90 if any(k in msg_lower for k in ("code", "python", "script", "calculate")) else 0.40,
+        "general": 0.80,
+    }
+    candidates = []
+    for candidate_role in ("vision", "coder", "general"):
+        configured = get_model_for_role(candidate_role)
+        candidates.append({
+            "modelName": configured["name"],
+            "role": candidate_role,
+            "score": scores[candidate_role],
+            "endpoint": configured.get("endpoint"),
+        })
     selected_role = role
     for c in candidates:
         if c["role"] == selected_role:
@@ -318,6 +372,7 @@ def _build_model_route(message: str, has_file: bool, role: str, model_info: dict
             break
     else:
         selected = candidates[-1]
+    selected = {**selected, "modelName": model_info["name"], "endpoint": model_info.get("endpoint")}
     return {
         "taskId": "",
         "detectedCapabilities": caps,
@@ -331,13 +386,16 @@ def _build_model_route(message: str, has_file: bool, role: str, model_info: dict
 
 
 def _build_ocr_result(text: str, filename: Optional[str], ok: bool = True) -> dict:
-    pages = max(1, text.count("--- Page") + (1 if text and "--- Page" not in text else 0))
-    text_blocks = max(1, text.count("\n\n") + 1) if text else 0
+    sheets = text.count("--- Sheet:") if ok else 0
+    pages = (0 if sheets else max(1, text.count("--- Page") + (1 if text and "--- Page" not in text else 0))) if ok else 0
+    text_blocks = max(1, text.count("\n\n") + 1) if text and ok else 0
     return {
         "pages": pages,
+        "sheets": sheets,
         "textBlocks": text_blocks,
         "tables": 0,
-        "confidence": 0.93 if ok else 0.0,
+        "succeeded": bool(ok),
+        "confidence": None,
         "externalCalls": 0,
     }
 

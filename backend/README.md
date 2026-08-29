@@ -1,27 +1,22 @@
 # Sovereign AI Workbench Backend
 
-This directory contains the FastAPI backend for AntarAI, a Sovereign On-Premise Agentic AI Workbench for confidential industrial work.
+FastAPI backend for **AntarAI — the final SIH PS 26117 solution for MRPL**, a Sovereign On-Premise Agentic AI Workbench for confidential industrial work.
 
-The backend exposes local APIs for agentic task execution, model routing, document/image uploads, generated outputs, sovereignty metrics, authentication, task history, and approval workflows.
+Local APIs for streaming agentic execution, model routing, uploads, sovereignty proof, authentication, task history, approvals, and governance — all on-premise.
 
 ## Stack
 
 - Python 3.11+
-- FastAPI
-- Uvicorn
-- Pydantic
-- SQLAlchemy
-- SQLite
-- bcrypt
-- python-jose JWT
+- FastAPI + Uvicorn + Pydantic
+- SQLAlchemy + SQLite (`backend/users.db`)
+- bcrypt + python-jose (HS256 JWT, 8h / 2h demo)
 - PyYAML
 - python-docx, openpyxl, python-pptx
+- ChromaDB + sentence-transformers (`all-MiniLM-L6-v2`) for local RAG
+- psutil for measured sovereignty
+- Tesseract (optional) for on-device OCR
 
 ## Setup
-
-From the repository root:
-
-### Windows PowerShell
 
 ```powershell
 cd backend
@@ -30,14 +25,14 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-If PowerShell blocks activation, run the backend with the virtual environment interpreter directly:
+If PowerShell blocks activation:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
 ```
 
-### macOS/Linux
+macOS/Linux:
 
 ```bash
 cd backend
@@ -48,13 +43,11 @@ python -m pip install -r requirements.txt
 
 ## Initialize demo users
 
-Startup automatically creates database tables and seeds users if the `users` table is empty. You can also run the seed script explicitly:
+Startup creates tables and seeds users when `users` is empty. You can also run explicitly:
 
 ```bash
 python seed.py
 ```
-
-The demo accounts are:
 
 | Username | Password | Role |
 | --- | --- | --- |
@@ -64,123 +57,91 @@ The demo accounts are:
 
 ## Run the API
 
-Run from the `backend/` directory so imports and `models.yaml` resolve correctly:
+From `backend/` so imports and `models.yaml`/`policies.yaml` resolve:
 
 ```bash
 python -m uvicorn app.main:app --reload --port 8000
+# also seed the local knowledge corpus on first run (backend/data/seed/*.md → ChromaDB)
 ```
 
-The API is available at `http://localhost:8000`.
-
-Interactive API documentation:
-
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-Health check:
-
-```bash
-curl http://localhost:8000/
-```
+- API: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+- Health: `curl http://localhost:8000/`
 
 ## Authentication
 
-`POST /auth/login` is public. Sensitive routes require an 8-hour JWT Bearer token.
-
-Request:
+`POST /auth/login` is public. Everything else requires `Authorization: Bearer <JWT>` (8h normal, 2h demo-scoped). Role is the **signed token's `role` claim** (`Principal`), so `require_role()` is authoritative.
 
 ```bash
 curl -X POST http://localhost:8000/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"engineer1","password":"demo1234"}'
-```
+# → { access_token, token_type, username, role }
 
-The response includes `access_token`, `token_type`, `username`, and `role`.
-
-Use the token on protected routes:
-
-```bash
 curl http://localhost:8000/models \
   -H "Authorization: Bearer <access_token>"
 ```
 
-Set a production secret before deployment:
+Demo role switching (final-round demo, `DEMO_MODE=1` default) re-issues a short-lived demo token without mutating `users.role`:
+
+```bash
+curl -X POST http://localhost:8000/demo/switch-role \
+  -H "Authorization: Bearer <access_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"role":"admin"}'
+```
+
+Authoritative view: `GET /me` → `{ username, role, demo, demoMode }`.
+
+Production secret:
 
 ```powershell
 $env:JWT_SECRET_KEY = "replace-with-a-long-random-secret"
 ```
 
-or:
-
-```bash
-export JWT_SECRET_KEY="replace-with-a-long-random-secret"
-```
-
-The code currently includes a development fallback secret for local demos. Do not use that fallback in production.
-
 ## API routes
 
-### Public routes
+### Public
 
-- `GET /` - health check.
-- `POST /auth/login` - authenticate a provisioned user and return a JWT.
+- `GET /` — health.
+- `POST /auth/login` — authenticate and return a JWT.
 
-### Protected routes
+### Protected
 
-- `POST /chat`
-  - Content type: `multipart/form-data`
-  - Fields: `message` and optional `file`
-  - Returns `response`, `model_used`, `steps`, and optional `generated_file`
-- `POST /upload`
-  - Content type: `multipart/form-data`
-  - Field: `file`
-  - Stores PDFs in `data/documents/` and images in `data/images/`
-- `GET /models`
-  - Returns configured model roles and status.
-- `GET /outputs`
-  - Returns generated files under the `outputs` key.
-- `GET /outputs/{filename}`
-  - Downloads a generated file.
-- `GET /sovereignty-status`
-  - Returns external calls, local model calls, local file access count, and a sovereignty verdict.
-- `GET /tasks/mine`
-  - Returns the authenticated user’s task history.
-- `GET /tasks`
-  - Lists all task history for approvers and admins.
-- Approval routes in `app/main.py`
-  - Used for supervisor approval and rejection of generated documents.
-
-## Example chat request
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Authorization: Bearer <access_token>" \
-  -F "message=Summarise the current refinery safety observations"
-```
-
-With a file:
-
-```bash
-curl -X POST http://localhost:8000/chat \
-  -H "Authorization: Bearer <access_token>" \
-  -F "message=Analyse this maintenance log" \
-  -F "file=@../data/samples/maintenance-log.pdf"
-```
+- `POST /chat` — legacy single-shot (`multipart: message, file?`) → `{ response, model_used, steps, generated_file }`.
+- `POST /chat/stream` — **streaming SSE** (`multipart: message, file?`) → `text/event-stream` (`task.created` → `router.*` → `ocr.*` → `knowledge.*` → `model.*` → `tool.*` → `verification.*` → `artifact.created` → `approval.required` → `task.completed`/`task.failed` + `stream.end`).
+- `POST /upload` — store file → `Document(uploaded_by, indexed=pending)` → `extract_text()` → `ingest_document()` (ChromaDB) → `{ status, indexed, chunks_indexed }`.
+- `GET /models` — registry with live `online`/`offline` per endpoint.
+- `GET /outputs` — `{ outputs: [{ filename, size_bytes, download_url }] }`.
+- `GET /outputs/{filename}` — download.
+- `GET /sovereignty-status` — **measured** `{ external_calls (psutil), local_model_calls, local_files_accessed, blocked_attempts, local_services (probed), model_integrity (SHA-256/health), online, verdict }`.
+- `GET /tasks/mine` — own tasks (20, `_task_to_dict` with verification + approval).
+- `GET /tasks` (approver/admin, 50) / `GET /audit` (approver/admin, 50) — cross-user history and audit trail.
+- `POST /tasks/{id}/approve` / `POST /tasks/{id}/reject` (approver/admin) — immutable approval record.
+- `GET /me` / `POST /demo/switch-role` (DEMO_MODE).
+- `GET /tools` — 6 live tool probes.
+- `GET /users` (admin) / `GET /policies` (admin, `policies.yaml`) / `GET /documents` / `DELETE /knowledge-base/{doc_id}` (admin).
 
 ## Agent pipeline
 
-`app/agent/orchestrator.py` runs the current pipeline:
+`app/agent/orchestrator.py` — `run_agent_stream()` is the single source of truth (generator of SSE dicts); `run_agent()` replays it for `POST /chat`.
 
-1. Classify the task as `general`, `coder`, or `vision`.
-2. Select the matching model from the registry.
-3. Add file context when a PDF/image is attached.
-4. Call the model adapter.
-5. Invoke document-generation or code-sandbox tools when matching keywords are present.
-6. Return the response and ordered activity steps.
+1. `task.created`
+2. `router.started/completed` — `classify_task()` → `get_model_for_role()` → `modelRoute` card payload
+3. `ocr.started/completed` — Tesseract when a file is present
+4. `knowledge.started/completed` — `retrieve_sources()` (ChromaDB, 3 hits, `EvidenceSource[]`)
+5. Prompt assembled (role system preamble + file name + extracted text + RAG context → ChatML)
+6. `model.started/completed` — `call_model(role, prompt, n_predict=1024 for coder else 512)` to llama.cpp
+7. Vision field extraction + doc generation (`generate_approval_note`) / sandbox (`run_code_sandbox`)
+8. `verification.started/completed` — `verify_artifact()` (re-execution / doc-structure + `sha256_file()`)
+9. `artifact.created` — `sha256` + `downloadUrl`
+10. `approval.required` (when `generated_file` and not `coder`) → `task.completed`/`task.failed`
+
+`backend/app/main.py` creates the `Task` row upfront (`planning`→`running`→`verifying`→`completed`/`pending_approval`/`failed`) and persists `risk`/`evidence_count`/`artifact_sha256`/`model_run_id`/`verification_json`/`approved_by`/`approved_at` via `_persist_task_update()`.
 
 ## Model registry
 
-`models.yaml` currently defines:
+`models.yaml`:
 
 ```yaml
 general: Qwen3-8B
@@ -188,34 +149,29 @@ coder: Qwen3-Coder
 vision: Qwen3-VL
 ```
 
-Each role points to a localhost completion endpoint at `http://localhost:8080/completion`. `app/models/registry.py` currently returns canned mock responses so the complete flow works without downloading model weights or running llama.cpp.
-
-To connect real open-weight models, replace the implementation of `call_model()` in `app/models/registry.py` with an audited localhost inference call. Keep model traffic inside the local network.
+All three map to `http://127.0.0.1:8081/completion` today (same `Qwen3-8B-Q4_K_M` weights, role-specific prompting). Add a dedicated model by editing `models.yaml` — no code change; VRAM is the only constraint. `list_models()` probes `GET /health` per base URL.
 
 ## Storage locations
 
-- SQLite database: `backend/users.db`
-- Uploaded documents: `backend/data/documents/`
-- Uploaded images: `backend/data/images/`
-- Generated artifacts: `backend/outputs/`
-- Model configuration: `backend/models.yaml`
+- SQLite: `backend/users.db` (+ non-destructive `ALTER TABLE` migration for provenance columns)
+- Uploads: `backend/data/documents/` , `backend/data/images/`
+- Vector index: `backend/data/chroma/` (`mrpl_documents`)
+- Seed corpus: `backend/data/seed/` (ingested on startup if empty)
+- Outputs: `backend/outputs/` (also where `solution_*.py` artifacts live)
+- Config: `backend/models.yaml`, `backend/policies.yaml`
 
-## Frontend connection note
+## Frontend connection
 
-The frontend runs at `http://localhost:5173` and targets this API at `http://localhost:8000`. CORS is currently permissive for local development.
+`http://localhost:5173` → `http://localhost:8000` (CORS permissive for local dev). The dashboard attaches the JWT, consumes `POST /chat/stream` via `fetch` + `ReadableStream`, and renders every SSE stage live. Set `VITE_API_URL` when the API is hosted elsewhere.
 
-The current frontend does not yet provide a login screen or attach JWT tokens. As a result, protected requests from the dashboard return `401 Authentication required` until frontend authentication is implemented or the backend is temporarily run in an unauthenticated demo configuration.
+## Security posture
 
-## Security hardening before production
+This is the SIH final solution — air-gapped by design. Before production:
 
-The current implementation is a hackathon prototype. Before operational use:
-
-- Replace the JWT development fallback with a deployment secret.
-- Restrict CORS to known frontend origins.
-- Validate upload names, extensions, MIME types, and file sizes.
-- Prevent path traversal when saving and downloading files.
-- Isolate the code sandbox with OS/container controls and resource limits.
-- Add structured audit logging and retention controls.
-- Protect `users.db`, uploaded files, and generated outputs with filesystem permissions.
-- Add rate limits and request size limits at the deployment boundary.
-- Replace mock model responses with validated localhost inference services.
+- Set `JWT_SECRET_KEY` via a deployment secret.
+- Restrict CORS to the deployed origin.
+- Keep upload validation (names, sizes, MIME) at the API boundary.
+- Preserve the sandbox jail (cwd jail, dropped env, `sitecustomize` network shim, `RLIMIT_CPU`/`RLIMIT_AS` on POSIX, 10s timeout); add a container boundary per site policy.
+- Filesystem-protect `users.db`, `backend/data/chroma/`, uploads, and `backend/outputs/`.
+- Set `ANTARAI_MODEL_FILE` + `ANTARAI_MODEL_SHA256` for real weight integrity.
+- Treat a non-zero `external_calls` from `GET /sovereignty-status` as a violation.

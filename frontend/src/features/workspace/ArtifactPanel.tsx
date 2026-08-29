@@ -9,6 +9,8 @@ import {
   XCircle,
 } from 'lucide-react'
 import { Icon } from '../../components/ui/Icon'
+import { MarkdownContent } from '../../components/ui/MarkdownContent'
+import { downloadOutputFile, fetchArtifactPreview } from '../../lib/api'
 import type { Artifact, EvidenceSource, VerificationResult } from '../../lib/types'
 
 interface ArtifactPanelProps {
@@ -17,6 +19,7 @@ interface ArtifactPanelProps {
   artifacts: Artifact[]
   verification?: VerificationResult
   loading: boolean
+  taskStatus?: string
 }
 
 type Tab = 'result' | 'evidence' | 'artifacts' | 'verify'
@@ -42,8 +45,20 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function ArtifactPanel({ response, sources, artifacts, verification, loading }: ArtifactPanelProps) {
+export function ArtifactPanel({ response, sources, artifacts, verification, loading, taskStatus }: ArtifactPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>('result')
+  const [artifactPreview, setArtifactPreview] = useState<{ filename: string; content: string } | null>(null)
+  const [inspectedSource, setInspectedSource] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState('')
+
+  async function previewArtifact(filename: string) {
+    setPreviewError('')
+    try {
+      setArtifactPreview({ filename, content: await fetchArtifactPreview(filename) })
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : 'Artifact preview failed')
+    }
+  }
 
   return (
     <div className="flex h-full flex-col border-l border-line bg-navy/40">
@@ -71,39 +86,45 @@ export function ArtifactPanel({ response, sources, artifacts, verification, load
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-3">
-        {/* RESULT tab */}
+        {/* RESULT tab — actual model/agent result, state-consistent */}
         {activeTab === 'result' && (
           <div>
-            {loading && (
-              <div className="space-y-2 animate-pulse">
-                {[100, 90, 75, 100, 60].map((w, i) => (
-                  <div key={i} className="h-3 rounded bg-panel" style={{ width: `${w}%` }} />
-                ))}
+            {loading && !response && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-[10px] text-muted">
+                  <Icon icon={ShieldCheck} size={12} className="animate-pulse text-signal" />
+                  Generating response…
+                </div>
+                <div className="space-y-2 animate-pulse">
+                  {[100, 90, 75, 100, 60].map((w, i) => (
+                    <div key={i} className="h-3 rounded bg-panel" style={{ width: `${w}%` }} />
+                  ))}
+                </div>
               </div>
             )}
-            {!loading && !response && (
+            {!loading && !response && taskStatus === 'failed' && (
+              <div className="py-10 text-center text-[10px] text-danger">Task failed — see Execution for the failed step</div>
+            )}
+            {!loading && !response && taskStatus !== 'failed' && (
               <div className="flex h-40 items-center justify-center text-[10px] text-slate-600">
                 Result will appear here after task completes
               </div>
             )}
-            {!loading && response && (
-              <div className="prose-sm text-xs leading-5 text-slate-200 space-y-2">
-                {response.split('\n').map((para, i) => (
-                  <p key={i} className={para.startsWith('##') ? 'font-semibold text-slate-100 text-sm' : 'text-muted leading-5'}>
-                    {para}
-                  </p>
-                ))}
-              </div>
+            {response && (
+              <MarkdownContent content={response} className="text-xs" />
             )}
           </div>
         )}
 
-        {/* EVIDENCE tab */}
+        {/* EVIDENCE tab — actual RAG sources used by current task */}
         {activeTab === 'evidence' && (
           <div className="space-y-3">
-            {sources.length === 0 && (
+            {sources.length === 0 && loading && (
+              <div className="py-10 text-center text-[10px] text-muted">Retrieving knowledge…</div>
+            )}
+            {sources.length === 0 && !loading && (
               <div className="py-10 text-center text-[10px] text-slate-600">
-                No evidence sources yet
+                No evidence sources yet — run a task to retrieve grounding sources
               </div>
             )}
             {sources.map((src) => (
@@ -123,21 +144,25 @@ export function ArtifactPanel({ response, sources, artifacts, verification, load
                       Page {src.page}{src.section ? ` · ${src.section}` : ''}
                     </div>
                   )}
-                  <button className="mt-1.5 text-[9px] text-signal hover:underline">
-                    [Open Source]
+                  <button onClick={() => setInspectedSource(inspectedSource === src.id ? null : src.id)} className="mt-1.5 text-[9px] text-signal hover:underline">
+                    [{inspectedSource === src.id ? 'Close Source' : 'Inspect Source'}]
                   </button>
+                  {inspectedSource === src.id && <div className="mt-2 border-t border-line/40 pt-2 font-mono text-[8px] leading-4 text-slate-500"><div>Source ID: {src.id}</div><div>Type: {src.sourceType}</div><div>Relevance: {Math.round(src.relevanceScore * 100)}%</div></div>}
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        {/* ARTIFACTS tab */}
+        {/* ARTIFACTS tab — actual files generated by backend, exact artifact */}
         {activeTab === 'artifacts' && (
           <div className="space-y-3">
+            {artifacts.length === 0 && loading && (
+              <div className="py-10 text-center text-[10px] text-muted">Waiting for artifact…</div>
+            )}
             {artifacts.length === 0 && !loading && (
               <div className="py-10 text-center text-[10px] text-slate-600">
-                Generated files will appear here
+                Generated files will appear here — the file displayed is the exact verified artifact
               </div>
             )}
             {artifacts.map((art) => (
@@ -161,36 +186,37 @@ export function ArtifactPanel({ response, sources, artifacts, verification, load
                   </div>
                 </div>
                 <div className="flex gap-2 border-t border-line/50 px-3 py-2">
-                  <button className="flex items-center gap-1.5 border border-line px-2.5 py-1 text-[9px] text-muted hover:border-signal/40 hover:text-signal transition-colors">
+                  <button onClick={() => void previewArtifact(art.filename)} className="flex items-center gap-1.5 border border-line px-2.5 py-1 text-[9px] text-muted hover:border-signal/40 hover:text-signal transition-colors">
                     <Icon icon={Eye} size={11} />
                     Preview
                   </button>
-                  <a
-                    href={art.downloadUrl}
-                    download={art.filename}
+                  <button
+                    onClick={() => void downloadOutputFile(art.filename)}
                     className="flex items-center gap-1.5 border border-signal/30 bg-signal/8 px-2.5 py-1 text-[9px] text-signal hover:bg-signal/15 transition-colors"
                   >
                     <Icon icon={Download} size={11} />
                     Download
-                  </a>
+                  </button>
                 </div>
               </div>
             ))}
+            {previewError && <div className="border border-danger/30 bg-danger/10 p-2 text-[9px] text-danger">{previewError}</div>}
+            {artifactPreview && <div className="border border-line bg-ink/50 p-3"><div className="mb-2 flex items-center justify-between font-mono text-[9px] text-muted"><span>{artifactPreview.filename}</span><button onClick={() => setArtifactPreview(null)}>Close</button></div><MarkdownContent content={artifactPreview.content} className="text-[10px]" /></div>}
           </div>
         )}
 
-        {/* VERIFY tab */}
+        {/* VERIFY tab — actual verification checks, not a pass/total "AI confidence" */}
         {activeTab === 'verify' && (
           <div className="space-y-4">
             {!verification && !loading && (
               <div className="py-10 text-center text-[10px] text-slate-600">
-                Verification will run after task completes
+                Verification will run after task completes — checks include source grounding, artifact integrity, and policy
               </div>
             )}
             {loading && !verification && (
               <div className="py-10 text-center">
                 <div className="inline-flex items-center gap-2 text-[10px] text-muted">
-                  <Icon icon={ShieldCheck} size={14} className="text-signal" />
+                  <Icon icon={ShieldCheck} size={14} className="text-signal animate-pulse" />
                   Verifying…
                 </div>
               </div>
@@ -220,12 +246,12 @@ export function ArtifactPanel({ response, sources, artifacts, verification, load
                   </div>
                 </div>
 
-                {/* Confidence */}
+                {/* Verification score — not "AI confidence" */}
                 <div className="border border-line bg-panel/50 p-4">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] text-muted">Confidence</span>
+                    <span className="text-[10px] text-muted">Verification Score</span>
                     <span className="font-mono text-sm font-bold text-signal">
-                      {Math.round(verification.confidence * 100)}%
+                      {verification.checks.filter(c=>c.passed).length}/{verification.checks.length} · {Math.round(verification.confidence * 100)}%
                     </span>
                   </div>
                   <div className="h-2 w-full overflow-hidden rounded-full bg-ink/60">
@@ -241,12 +267,17 @@ export function ArtifactPanel({ response, sources, artifacts, verification, load
                       className={verification.passed ? 'text-signal' : 'text-danger'}
                     />
                     <span className={`font-mono text-[9px] uppercase font-bold ${verification.passed ? 'text-signal' : 'text-danger'}`}>
-                      {verification.passed ? 'HIGH' : 'LOW'}
+                      {verification.passed ? 'VERIFIED' : 'NEEDS REVIEW'}
                     </span>
                   </div>
                   {verification.summary && (
                     <p className="mt-2 text-[9px] leading-4 text-muted">{verification.summary}</p>
                   )}
+                </div>
+
+                <div className="border border-line bg-panel/50 p-4 font-mono text-[9px]">
+                  <div className="mb-2 uppercase tracking-[0.12em] text-muted">Artifact Integrity</div>
+                  {artifacts.length === 0 ? <div className="text-slate-500">No artifact generated for this task</div> : artifacts.map((artifact) => <div key={artifact.id} className="space-y-1"><div className="text-slate-300">{artifact.filename}</div><div className={artifact.sha256 ? 'break-all text-signal' : 'text-danger'}>{artifact.sha256 ? `SHA-256 ${artifact.sha256}` : 'SHA-256 unavailable'}</div></div>)}
                 </div>
               </>
             )}

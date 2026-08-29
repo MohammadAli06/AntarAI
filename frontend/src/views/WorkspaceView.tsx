@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { AlertTriangle, CheckCircle2, HelpCircle, Loader2, Play } from 'lucide-react'
 import { streamChat } from '../lib/api'
 import { getUser } from '../lib/auth'
+import { Icon } from '../components/ui/Icon'
 import type {
   AgentStep,
   Artifact,
@@ -13,6 +15,7 @@ import type {
   UploadedFile,
   VerificationResult,
   WorkflowTemplate,
+  ViewId,
 } from '../lib/types'
 import { ContextPanel } from '../features/workspace/ContextPanel'
 import { AgentConsole } from '../features/workspace/ExecutionTrace'
@@ -28,6 +31,7 @@ interface WorkspaceViewProps {
   sovereignty: SovereigntyStatus | null
   onRefreshSovereignty: () => void
   activeTemplate?: WorkflowTemplate | null
+  onNavigate: (view: ViewId) => void
 }
 
 // Backend stream event (loosely typed — the reducer switches on `type`).
@@ -35,6 +39,7 @@ interface StreamEvent {
   type: string
   taskId?: string
   stepId?: string
+  timestamp?: string
   data?: Record<string, any>
 }
 
@@ -57,8 +62,10 @@ export function WorkspaceView({
   outputsLoading: _outputsLoading,
   outputsError: _outputsError,
   onRefreshOutputs,
+  sovereignty,
   onRefreshSovereignty,
   activeTemplate,
+  onNavigate,
 }: WorkspaceViewProps) {
   const user = getUser()
 
@@ -71,7 +78,6 @@ export function WorkspaceView({
   const [sources, setSources] = useState<EvidenceSource[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [verification, setVerification] = useState<VerificationResult | undefined>(undefined)
-  const [risk] = useState<RiskLevel>('high')
   const [task, setTask] = useState<Partial<Task> | null>(null)
   const [provenanceOpen, setProvenanceOpen] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
@@ -113,16 +119,25 @@ export function WorkspaceView({
     setArtifacts([])
     setVerification(undefined)
     setResponse('')
+    const now = new Date().toISOString()
     setTask({
       id: 'TASK-…',
-      title: promptText.slice(0, 60),
+      title: promptText.slice(0, 80) || 'Untitled task',
+      description: promptText,
       ownerId: user?.username ?? 'engineer1',
       ownerName: user?.username ?? 'engineer1',
-      status: 'planning',
+      status: 'running',
       risk: 'high',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
       workflowTemplate: activeTemplate ?? undefined,
+      inputs: [],
+      plan: [],
+      modelRoutes: [],
+      sources: [],
+      toolRuns: [],
+      artifacts: [],
+      requiresApproval: false,
     })
 
     const controller = new AbortController()
@@ -136,99 +151,142 @@ export function WorkspaceView({
 
         switch (ev.type) {
           case 'task.created':
-            setTask((prev) => ({ ...prev, id: ev.taskId ?? prev?.id }))
-            upsertStep('plan', 'completed', { durationMs: 1 })
+            setTask((prev) => ({
+              ...prev,
+              id: ev.taskId ?? prev?.id,
+              updatedAt: new Date().toISOString(),
+            }))
+            break
+          case 'plan.created':
+            setTask((prev) => ({ ...prev, status: 'planning', updatedAt: ev.timestamp ?? new Date().toISOString() }))
+            upsertStep('plan', 'completed', { completedAt: ev.timestamp, detail: 'Execution plan created' })
             break
           case 'router.started':
             upsertStep('route', 'running')
+            setTask((prev) => ({ ...prev, status: 'running', updatedAt: ev.timestamp ?? new Date().toISOString() }))
             break
-          case 'router.completed':
-            upsertStep('route', 'completed', { modelRoute: d.modelRoute })
+          case 'router.completed': {
+            const riskVal = (d.risk as RiskLevel | undefined) ?? 'high'
+            setTask((prev) => ({
+              ...prev,
+              risk: riskVal,
+              modelRunId: d.endpoint ? `${d.model}@${d.endpoint}` : prev?.modelRunId,
+              updatedAt: new Date().toISOString(),
+            }))
+            upsertStep('route', 'completed', { modelRoute: d.modelRoute as any, detail: d.routeReason as string | undefined })
             break
+          }
           case 'ocr.started':
             upsertStep('ocr', 'running')
+            // mark attached files as processing
+            setUploadedFiles((prev) => prev.map((f) => ({ ...f, ocrStatus: 'processing' as const })))
             break
-          case 'ocr.completed':
-            upsertStep('ocr', 'completed', { ocrResult: d.ocrResult })
+          case 'ocr.completed': {
+            const ok = Boolean((d.ocrResult as any)?.succeeded)
+            upsertStep('ocr', ok ? 'completed' : 'failed', { ocrResult: d.ocrResult as any, error: ok ? undefined : String(d.reason || 'Extraction failed') })
+            setUploadedFiles((prev) => prev.map((f) => ({ ...f, ocrStatus: ok ? 'complete' as const : 'failed' as const, visionStatus: f.type === 'image' ? (ok ? 'complete' as const : 'failed' as const) : f.visionStatus, pageCount: (d.ocrResult as any)?.pages || undefined, sheetCount: (d.ocrResult as any)?.sheets || undefined })))
             break
+          }
           case 'knowledge.started':
             upsertStep('knowledge', 'running')
             break
-          case 'knowledge.completed':
-            upsertStep('knowledge', 'completed', { sources: d.sources })
-            setSources(d.sources ?? [])
+          case 'knowledge.completed': {
+            const srcs = (d.sources as EvidenceSource[] | undefined) ?? []
+            upsertStep('knowledge', 'completed', { sources: srcs as any })
+            setSources(srcs)
+            setTask((prev) => ({ ...prev, evidenceCount: srcs.length, updatedAt: new Date().toISOString() }))
             break
+          }
           case 'model.started':
-            upsertStep('model', 'running', { detail: d.model })
+            upsertStep('model', 'running', { detail: (d.model as string | undefined) ?? (d.role as string | undefined) })
             break
           case 'model.completed':
-            upsertStep('model', 'completed', { detail: d.detail })
-            setResponse(d.response ?? '')
+            upsertStep('model', 'completed', { detail: (d.detail as string | undefined) })
+            if (d.response) setResponse(d.response as string)
             break
           case 'model.failed':
-            upsertStep('model', 'failed', { error: d.error })
+            upsertStep('model', 'failed', { error: d.error as string | undefined })
             break
           case 'tool.started':
             if (sid) upsertStep(sid, 'running')
             break
           case 'tool.completed':
-            if (sid) upsertStep(sid, 'completed', { toolRun: d.toolRun })
+            if (sid) upsertStep(sid, 'completed', { toolRun: d.toolRun as any })
             break
           case 'tool.failed':
-            if (sid) upsertStep(sid, 'failed', { toolRun: d.toolRun, error: 'tool failed' })
+            if (sid) upsertStep(sid, 'failed', { error: (d.error as string | undefined) ?? (d.toolRun as any)?.error })
             break
           case 'verification.started':
             upsertStep('verification', 'running')
+            setTask((prev) => ({ ...prev, status: 'verifying', updatedAt: new Date().toISOString() }))
             break
-          case 'verification.completed':
-            upsertStep('verification', 'completed', { verification: d.verification })
-            setVerification(d.verification)
+          case 'verification.completed': {
+            const v = d.verification as VerificationResult | undefined
+            upsertStep('verification', 'completed', { verification: v as any })
+            if (v) setVerification(v)
             break
-          case 'verification.failed':
-            upsertStep('verification', 'failed', { error: 'verification failed' })
-            break
+          }
           case 'artifact.created': {
             const art = d.artifact as Artifact | undefined
-            upsertStep('artifact', 'completed', { artifact: art })
-            if (art) {
-              setArtifacts((prev) => (prev.find((a) => a.id === art.id) ? prev : [...prev, art]))
-            }
+            if (art) setArtifacts((prev) => [...prev, art])
+            upsertStep('artifact', art ? 'completed' : 'failed', { artifact: art, completedAt: ev.timestamp })
             break
           }
           case 'approval.required':
-            upsertStep('approval', 'completed')
             setTask((prev) => ({
               ...prev,
               status: 'pending_approval',
-              requiresApproval: true,
-              risk: d.risk,
-              evidenceCount: d.evidenceCount,
-              approval: {
-                approvedBy: '',
-                approvedAt: '',
-                taskId: ev.taskId ?? '',
-                artifactHash: d.artifactSha256 ?? '',
-                modelRunId: d.modelRunId ?? '',
-                evidenceSetId: `EV-${ev.taskId ?? ''}-${d.evidenceCount ?? 0}`,
-              },
+              risk: (d.risk as RiskLevel | undefined) ?? prev?.risk ?? 'high',
+              evidenceCount: (d.evidenceCount as number | undefined) ?? prev?.evidenceCount,
+              modelRunId: (d.modelRunId as string | undefined) ?? prev?.modelRunId,
+              updatedAt: new Date().toISOString(),
             }))
+            upsertStep('approval', 'pending', { detail: 'Supervisor approval required' })
             break
-          case 'task.completed':
+          case 'approval.approved':
             setTask((prev) => ({
               ...prev,
-              id: ev.taskId ?? prev?.id,
-              status: d.status ?? 'completed',
-              risk: d.risk ?? prev?.risk,
-              evidenceCount: d.evidenceCount ?? prev?.evidenceCount,
-              modelRunId: d.modelRunId,
+              status: 'approved',
+              approval: {
+                approvedBy: (d.approvedBy as string | undefined) ?? 'Supervisor',
+                approvedAt: new Date().toISOString(),
+                taskId: (ev.taskId as string | undefined) ?? '',
+                artifactHash: (d.artifactSha256 as string | undefined) ?? '',
+                modelRunId: (d.modelRunId as string | undefined) ?? '',
+                evidenceSetId: `EV-${(ev.taskId as string | undefined) ?? ''}-${(d.evidenceCount as number | undefined) ?? 0}`,
+              },
+              updatedAt: new Date().toISOString(),
             }))
-            if (d.response) setResponse(d.response)
             break
-          case 'task.failed':
-            setTask((prev) => ({ ...prev, status: 'failed' }))
+          case 'task.completed': {
+            const status = (d.status as string | undefined) ?? 'completed'
+            setTask((prev) => ({
+              ...prev,
+              id: (ev.taskId as string | undefined) ?? prev?.id,
+              status: status as any,
+              risk: (d.risk as RiskLevel | undefined) ?? prev?.risk,
+              evidenceCount: (d.evidenceCount as number | undefined) ?? prev?.evidenceCount,
+              modelRunId: (d.modelRunId as string | undefined) ?? prev?.modelRunId,
+              updatedAt: new Date().toISOString(),
+            }))
+            if (d.response) setResponse(d.response as string)
+            // persist verification/artifact fields that arrive only on task.completed
+            if (d.verification) setVerification(d.verification as VerificationResult)
+            if (!d.generatedFile) upsertStep('artifact', 'skipped', { detail: 'No file artifact requested' })
+            if (d.artifactSha256 && artifacts.length === 0) {
+              // artifact already handled via artifact.created; keep hash on task
+            }
+            if (status !== 'pending_approval') upsertStep('approval', 'skipped', { detail: 'Auto-approved by policy' })
+            break
+          }
+          case 'task.failed': {
+            const failedStep = (d.stepId as string | undefined) ?? (d.failedStep as string | undefined)
+            if (failedStep) upsertStep(failedStep, 'failed', { error: d.error as string | undefined })
+            setTask((prev) => ({ ...prev, status: 'failed', updatedAt: new Date().toISOString() }))
             setError(d.error ? String(d.error) : 'Task failed')
-            if (d.response) setResponse(d.response)
+            if (d.response) setResponse(d.response as string)
             break
+          }
           default:
             break
         }
@@ -238,19 +296,16 @@ export function WorkspaceView({
       onRefreshSovereignty()
     } catch (err) {
       if (controller.signal.aborted) return
-      setError(err instanceof Error ? err.message : 'Task failed')
+      setError(err instanceof Error ? err.message : 'Task execution failed')
       setTask((prev) => ({ ...prev, status: 'failed' }))
     } finally {
       setLoading(false)
-      abortRef.current = null
     }
   }
 
   function handleSubmit(promptText: string, file?: File) {
     setPromptState(promptText)
-    if (file) {
-      setUploadedFiles((prev) => [...prev, { file, type: file.type.startsWith('image/') ? 'image' : 'pdf', ocrStatus: 'pending' }])
-    }
+    setUploadedFiles(file ? [{ file, type: file.type.startsWith('image/') ? 'image' : file.name.toLowerCase().endsWith('.pdf') ? 'pdf' : 'document', ocrStatus: 'pending', visionStatus: file.type.startsWith('image/') ? 'pending' : undefined }] : [])
     void runRealStream(promptText, file)
   }
 
@@ -258,82 +313,144 @@ export function WorkspaceView({
     setUploadedFiles((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const isRunning = loading || task?.status === 'running' || task?.status === 'verifying'
+  const isFailed = task?.status === 'failed'
+  const isPendingApproval = task?.status === 'pending_approval'
+  const isCompleted = task?.status === 'completed' || task?.status === 'approved'
+  const riskLevel: RiskLevel = (task?.risk as RiskLevel | undefined) ?? 'high'
+  const riskLabel = riskLevel.toUpperCase()
+  const riskTone =
+    riskLevel === 'critical' || riskLevel === 'high'
+      ? 'border-danger/40 bg-danger/10 text-danger'
+      : riskLevel === 'medium'
+        ? 'border-warning/40 bg-warning/10 text-warning'
+        : 'border-signal/40 bg-signal/10 text-signal'
+  const statusLabel = !task
+    ? 'IDLE'
+    : isFailed
+      ? 'FAILED'
+      : isPendingApproval
+        ? 'PENDING APPROVAL'
+        : isRunning
+          ? 'RUNNING'
+          : isCompleted
+            ? 'COMPLETED'
+            : String(task.status).toUpperCase()
+  const progressPct = !task ? 0 : isFailed ? 100 : isPendingApproval ? 90 : isCompleted ? 100 : isRunning ? Math.min(95, Math.max(15, steps.filter((s) => s.status === 'completed').length * 12)) : 0
+
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      {/* Task bar */}
-      <div className="flex shrink-0 items-center justify-between border-b border-line bg-ink/40 px-4 py-2">
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-slate-600">
-            Workspace
+    <div className="flex h-full flex-col overflow-hidden bg-ink text-slate-100">
+      {/* ── Sub-header / Task Metadata Bar ─────────────────────────────────────── */}
+      <div className="flex shrink-0 items-center justify-between border-b border-line bg-panel/50 px-4 py-2.5 sm:px-6">
+        <div className="flex items-center gap-2.5 sm:gap-3">
+          <span className="font-mono text-xs font-bold text-slate-100">
+            # {task?.id || 'No task yet'}
           </span>
-          {task?.id && (
-            <>
-              <span className="text-slate-700">/</span>
-              <span className="font-mono text-[9px] text-muted">{task.id}</span>
-            </>
+          {task && (
+            <span className={`flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[9px] font-bold uppercase ${riskTone}`}>
+              <span className={`size-1.5 rounded-full ${riskLevel === 'high' || riskLevel === 'critical' ? 'bg-danger' : riskLevel === 'medium' ? 'bg-warning' : 'bg-signal'}`} />
+              {riskLabel} RISK
+            </span>
           )}
+          <span className={`flex items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[9px] font-bold uppercase ${isFailed ? 'border-danger/40 bg-danger/10 text-danger' : isPendingApproval ? 'border-warning/40 bg-warning/10 text-warning' : isRunning ? 'border-signal/40 bg-signal/10 text-signal' : 'border-line bg-panel text-muted'}`}>
+            <Icon icon={isRunning ? Loader2 : isFailed ? AlertTriangle : CheckCircle2} size={10} className={isRunning ? 'animate-spin' : ''} />
+            {statusLabel}
+          </span>
         </div>
+
         <div className="flex items-center gap-3">
-          {task?.id && (
-            <button
-              onClick={() => setProvenanceOpen(true)}
-              className="text-[9px] text-muted hover:text-signal transition-colors underline underline-offset-2"
-            >
-              Why should I trust this result?
-            </button>
-          )}
-          <div className="flex items-center gap-1.5 font-mono text-[9px]">
-            <span className="size-1.5 rounded-full bg-signal" />
-            <span className="text-muted">AIR-GAPPED</span>
-          </div>
+          <button
+            onClick={() => setProvenanceOpen(true)}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-signal transition-colors"
+          >
+            <Icon icon={HelpCircle} size={13} className="text-signal" />
+            <span className="hidden sm:inline">Why should I trust this result?</span>
+          </button>
         </div>
       </div>
 
       {/* Error banner */}
       {error && (
-        <div className="shrink-0 border-b border-danger/25 bg-danger/10 px-4 py-2 text-xs text-danger">
-          {error} ·{' '}
-          <button onClick={() => setError('')} className="underline">
+        <div className="shrink-0 border-b border-danger/30 bg-danger/10 px-4 py-2 text-xs text-danger flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="underline font-mono text-[10px]">
             Dismiss
           </button>
         </div>
       )}
 
-      {/* 3-panel layout */}
+      {/* ── 3-panel workspace layout ────────────────────────────────────────── */}
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* LEFT — Context */}
-        <div className="hidden w-[200px] shrink-0 overflow-hidden lg:flex lg:flex-col xl:w-[220px]">
+        {/* LEFT — Task Summary, Uploads, RAG */}
+        <div className="hidden w-[240px] shrink-0 overflow-hidden border-r border-line bg-navy/60 lg:flex lg:flex-col xl:w-[260px]">
           <ContextPanel
             task={task}
             uploadedFiles={uploadedFiles}
             sources={sources}
             steps={steps}
-            risk={risk}
+            risk={riskLevel}
             onRemoveFile={removeFile}
+            sovereignty={sovereignty}
+            verification={verification}
+            artifacts={artifacts}
+            onOpenProvenance={() => setProvenanceOpen(true)}
+            onOpenKnowledgeBase={() => onNavigate('knowledge-base')}
           />
         </div>
 
-        {/* CENTER — Agent Console */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden border-l border-line">
-          <AgentConsole steps={steps} loading={loading} response={response} prompt={prompt}>
+        {/* CENTER — Execution Trace / Console */}
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-ink">
+          <AgentConsole
+            steps={steps}
+            loading={loading}
+            response={response}
+            prompt={prompt}
+            task={task}
+            sources={sources}
+            artifacts={artifacts}
+            verification={verification}
+            onOpenApprovals={() => onNavigate('approvals')}
+          >
             <TaskComposer
               onSubmit={handleSubmit}
               loading={loading}
               initialPrompt={activeTemplate?.defaultPrompt ?? ''}
               template={activeTemplate}
+              onOpenTemplates={() => onNavigate('home')}
             />
           </AgentConsole>
         </div>
 
-        {/* RIGHT — Artifacts + Evidence */}
-        <div className="hidden w-[200px] shrink-0 overflow-hidden xl:flex xl:flex-col xl:w-[220px]">
+        {/* RIGHT — Live Preview, Verification, Deliverables */}
+        <div className="hidden w-[250px] shrink-0 overflow-hidden border-l border-line bg-navy/40 xl:flex xl:flex-col xl:w-[280px]">
           <ArtifactPanel
             response={response}
             sources={sources}
             artifacts={artifacts}
             verification={verification}
             loading={loading}
+            taskStatus={task?.status}
           />
+        </div>
+      </div>
+
+      {/* ── Bottom Progress Bar ─────────────────────────────────────────────── */}
+      <div className="flex shrink-0 items-center justify-between border-t border-line bg-panel/70 px-4 py-2 sm:px-6">
+        <div className="flex items-center gap-3 w-full max-w-sm">
+          <span className="font-mono text-[9px] uppercase tracking-wider text-slate-400 shrink-0">
+            EXECUTION PROGRESS {progressPct}%
+          </span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-ink/80">
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${isFailed ? 'bg-danger' : 'bg-gradient-to-r from-orange-500 to-amber-400'}`}
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        </div>
+        <div className="hidden sm:flex items-center gap-2 font-mono text-[9px] text-slate-500">
+          <span>{sovereignty?.externalCalls === 0 ? 'AIR-GAPPED SYSTEM' : 'SOVEREIGNTY STATUS'}</span>
+          <span className="text-slate-700">·</span>
+          <span className={sovereignty?.externalCalls === 0 ? 'text-signal' : 'text-warning'}>{sovereignty?.externalCalls ?? '—'} EGRESS</span>
         </div>
       </div>
 
@@ -346,6 +463,7 @@ export function WorkspaceView({
         sources={sources}
         artifacts={artifacts}
         verification={verification}
+        sovereignty={sovereignty}
       />
     </div>
   )

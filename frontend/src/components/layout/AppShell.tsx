@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Cpu, Shield } from 'lucide-react'
+import { Bell, Cpu, Lock, Shield, ShieldCheck, User } from 'lucide-react'
 import { Sidebar, MobileMenuButton } from './Sidebar'
 import { Icon } from '../ui/Icon'
 import { ThemeToggle } from '../ui/ThemeToggle'
@@ -40,7 +40,6 @@ export function AppShell({
   onToggleTheme,
   children,
   sovereignty,
-  onRefreshSovereignty: _onRefreshSovereignty,
   sidebarCollapsed,
   onToggleSidebar,
   mobileOpen,
@@ -55,7 +54,7 @@ export function AppShell({
   const isAirGapped = sovereignty?.online !== false && sovereignty?.externalCalls === 0
 
   return (
-    <div className="flex min-h-screen bg-ink text-slate-100">
+    <div className="flex h-screen overflow-hidden bg-ink text-slate-100 selection:bg-signal selection:text-white">
       <Sidebar
         activeView={activeView}
         onNavigate={onNavigate}
@@ -66,57 +65,55 @@ export function AppShell({
         onCloseMobile={onCloseMobile}
         role={demoRole}
       />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* ── Persistent Header ──────────────────────────────────────────── */}
-        <header className="sticky top-0 z-20 flex min-h-[60px] items-center justify-between border-b border-line bg-ink/95 px-4 backdrop-blur-md sm:px-5">
-          {/* Left: mobile toggle + branding */}
+        <header className="sticky top-0 z-20 flex min-h-[60px] items-center justify-between border-b border-line bg-ink/95 px-4 backdrop-blur-md sm:px-6">
+          {/* Left: mobile toggle + title */}
           <div className="flex min-w-0 items-center gap-3">
             <MobileMenuButton onClick={onToggleMobile} />
-            <div className="hidden min-w-0 sm:block">
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold tracking-tight text-slate-100">AntarAI</span>
-                <span className="text-slate-700">/</span>
-                <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-slate-600">MRPL · Engineering Workspace</span>
-              </div>
+            <div className="flex items-center gap-2 font-mono">
+              <span className="text-xs font-bold tracking-tight text-slate-100 sm:text-sm">
+                ORCHESTRATOR // SYSTEM_ROOT
+              </span>
             </div>
           </div>
 
-          {/* Right: sovereignty pill + resource indicators + demo role + theme + user */}
+          {/* Center/Right: high-tech status pills + demo controls */}
           <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-            {/* Sovereignty pill — always visible */}
-            <div
-              className={`hidden items-center gap-1.5 border px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.12em] sm:flex ${
-                isAirGapped
-                  ? 'border-signal/30 bg-signal/8 text-signal'
-                  : 'border-warning/30 bg-warning/8 text-warning'
-              }`}
-            >
-              <span className={`size-1.5 rounded-full ${isAirGapped ? 'bg-signal' : 'bg-warning animate-pulse'}`} />
-              {isAirGapped ? 'Air-Gapped' : 'Status Unknown'}
+            {/* Air-gapped pill */}
+            <div className="flex items-center gap-1.5 rounded border border-signal/40 bg-signal/10 px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-signal">
+              <Icon icon={ShieldCheck} size={11} className="text-signal" />
+              <span>{isAirGapped ? 'AIR-GAPPED' : 'ONLINE'}</span>
             </div>
 
             {/* GPU indicator */}
-            <div className="hidden items-center gap-1 xl:flex">
-              <Icon icon={Cpu} size={12} className="text-muted" />
-              <span className="font-mono text-[9px] text-muted">GPU 63%</span>
+            <div className="hidden items-center gap-1.5 rounded border border-line bg-panel/60 px-2.5 py-1 font-mono text-[9px] text-slate-300 md:flex">
+              <Icon icon={Cpu} size={11} className="text-signal" />
+              <span>GPU 82%</span>
             </div>
 
-            {/* Outbound counter — real measured value from sovereignty status */}
-            <div className="hidden items-center gap-1 border border-line px-2 py-1 xl:flex">
-              <span className="font-mono text-[9px] text-signal">{sovereignty?.externalCalls ?? 0}</span>
-              <span className="font-mono text-[9px] text-slate-600">OUTBOUND</span>
+            {/* Isolated pill */}
+            <div className="hidden items-center gap-1.5 rounded border border-line bg-panel/60 px-2.5 py-1 font-mono text-[9px] text-slate-300 lg:flex">
+              <Icon icon={Lock} size={11} className="text-signal" />
+              <span>ISOLATED</span>
             </div>
 
-            {/* Demo role switcher — server-verified, hidden when demo mode is off */}
+            {/* Outbound counter */}
+            <div className="hidden items-center gap-1.5 rounded border border-line bg-panel/40 px-2.5 py-1 font-mono text-[9px] xl:flex">
+              <span className="font-bold text-signal">{sovereignty?.externalCalls ?? 0}</span>
+              <span className="text-slate-500">OUTBOUND</span>
+            </div>
+
+            {/* Demo role switcher */}
             {demoMode && (
-              <div className="flex items-center gap-1.5 border border-warning/30 bg-warning/8 px-2 py-1">
-                <span className="hidden font-mono text-[8px] uppercase tracking-[0.12em] text-warning sm:inline">Demo:</span>
+              <div className="flex items-center gap-1.5 rounded border border-signal/30 bg-signal/10 px-2 py-1">
+                <span className="hidden font-mono text-[8px] uppercase tracking-[0.12em] text-signal sm:inline">Role:</span>
                 <select
                   value={demoRole}
                   onChange={(e) => onDemoRoleChange(e.target.value as UserRole)}
                   disabled={switching}
-                  className="cursor-pointer bg-transparent font-mono text-[9px] uppercase tracking-[0.1em] text-warning outline-none disabled:opacity-50"
-                  aria-label="Switch demo role (server-verified)"
+                  className="cursor-pointer bg-transparent font-mono text-[9px] uppercase tracking-[0.1em] text-signal outline-none disabled:opacity-50"
+                  aria-label="Switch role"
                 >
                   {DEMO_ROLES.map((r) => (
                     <option key={r.value} value={r.value} className="bg-navy text-slate-200 normal-case">
@@ -129,14 +126,13 @@ export function AppShell({
 
             <ThemeToggle theme={theme} onToggle={onToggleTheme} compact />
 
-            {/* User avatar */}
+            {/* User button */}
             <button
               onClick={onLogout}
-              title="Sign out"
-              className="flex size-8 items-center justify-center border border-line bg-panel font-mono text-[9px] uppercase tracking-wider text-muted hover:border-danger/40 hover:text-danger"
-              aria-label={`Signed in as ${user?.username || 'user'} — click to sign out`}
+              title={`Signed in as ${user?.username || 'admin'} · Click to logout`}
+              className="flex size-8 items-center justify-center rounded border border-line bg-panel font-mono text-[10px] text-slate-300 hover:border-signal/50 hover:text-signal transition-colors"
             >
-              <Icon icon={Shield} size={13} />
+              <Icon icon={User} size={14} />
             </button>
           </div>
         </header>

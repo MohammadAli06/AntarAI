@@ -37,12 +37,14 @@ def verify_artifact(
     role: str,
     sources_count: int = 0,
     task_type: str = "general",
+    model_name: str = "Local model",
+    model_endpoint: str = "local",
 ) -> dict:
     """Run real verification checks and return a VerificationResult dict."""
     checks: list[dict] = []
 
     if role == "coder" or (artifact_path and artifact_path.endswith(".py")):
-        checks = _verify_code(model_response)
+        checks = _verify_code(artifact_path, model_response)
     elif artifact_path and artifact_path.endswith(".docx"):
         checks = _verify_doc(artifact_path, sources_count)
     elif artifact_path:
@@ -52,19 +54,20 @@ def verify_artifact(
         checks = [
             {"label": "Response generated", "passed": bool(model_response.strip()),
              "detail": f"{len(model_response)} chars produced locally"},
-            {"label": "No external source used", "passed": True,
+            {"label": "No external API used", "passed": True,
              "detail": "0 external API calls during execution"},
             {"label": "Local model used", "passed": True,
-             "detail": "Qwen3-8B-Q4_K_M on 127.0.0.1:8081"},
+             "detail": f"{model_name} on {model_endpoint}"},
         ]
 
     passed_count = sum(1 for c in checks if c["passed"])
     confidence = passed_count / len(checks) if checks else 0.0
     passed = passed_count == len(checks) and len(checks) > 0
 
+    subject = "Artifact" if artifact_path else "Response"
     summary = (
         f"{passed_count}/{len(checks)} checks passed. "
-        + ("Artifact ready for approval." if passed else "Artifact requires review.")
+        + (f"{subject} verification passed." if passed else f"{subject} requires review.")
     )
 
     return {
@@ -79,9 +82,24 @@ def verify_artifact(
 # Code verification
 # ---------------------------------------------------------------------------
 
-def _verify_code(model_response: str) -> list[dict]:
+def _verify_code(artifact_path: Optional[str], model_response: str) -> list[dict]:
     checks: list[dict] = []
-    result = run_code_sandbox(model_response)
+    path = Path(artifact_path) if artifact_path else None
+    if path is not None and not path.is_absolute():
+        path = _OUTPUTS_DIR / path
+    if path is not None and path.is_file():
+        code = path.read_text(encoding="utf-8")
+    else:
+        # This fallback only applies to a non-artifact code response.
+        code = model_response
+    result = run_code_sandbox(code, persist_artifact=False)
+
+    if path is not None:
+        checks.append({
+            "label": "Delivered artifact present",
+            "passed": path.is_file(),
+            "detail": path.name if path.is_file() else "artifact missing",
+        })
 
     checks.append({
         "label": "Code executes (exit 0)",

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import logging
+import io
 from pathlib import Path
 from typing import Optional
 
@@ -34,10 +35,12 @@ try:
     _tesseract_cmd = os.getenv("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
     if os.path.exists(_tesseract_cmd):
         pytesseract.pytesseract.tesseract_cmd = _tesseract_cmd
+    # Import success alone does not prove the local binary can execute.
+    pytesseract.get_tesseract_version()
     _TESSERACT_AVAILABLE = True
-except ImportError:
+except Exception:
     _TESSERACT_AVAILABLE = False
-    logger.warning("pytesseract/Pillow not installed — OCR unavailable")
+    logger.warning("pytesseract, Pillow, or the Tesseract binary is unavailable")
 
 try:
     import PyPDF2
@@ -45,6 +48,20 @@ try:
 except ImportError:
     _PYPDF_AVAILABLE = False
     logger.warning("PyPDF2 not installed — PDF text extraction unavailable")
+
+try:
+    from docx import Document as DocxDocument
+    _DOCX_AVAILABLE = True
+except ImportError:
+    _DOCX_AVAILABLE = False
+    logger.warning("python-docx not installed — DOCX extraction unavailable")
+
+try:
+    from openpyxl import load_workbook
+    _XLSX_AVAILABLE = True
+except ImportError:
+    _XLSX_AVAILABLE = False
+    logger.warning("openpyxl not installed — XLSX extraction unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +95,59 @@ def extract_text(file_path: str) -> str:
         return _extract_from_pdf(path)
     elif suffix in {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp", ".gif"}:
         return _extract_from_image(path)
+    elif suffix in {".txt", ".md", ".csv", ".json", ".yaml", ".yml"}:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+            return text or f"[No readable text found in {path.name}]"
+        except Exception as exc:
+            return f"[Text extraction failed for {path.name}: {exc}]"
+    elif suffix == ".docx":
+        return _extract_from_docx(path)
+    elif suffix == ".xlsx":
+        return _extract_from_xlsx(path)
     else:
         return f"[File type {suffix} not supported for text extraction — filename: {path.name}]"
+
+
+def _extract_from_docx(path: Path) -> str:
+    """Extract paragraphs and table cells from a Word document."""
+    if not _DOCX_AVAILABLE:
+        return f"[DOCX extraction unavailable for {path.name} — python-docx is not installed]"
+    try:
+        document = DocxDocument(str(path))
+        blocks = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                values = [cell.text.strip() for cell in row.cells]
+                if any(values):
+                    blocks.append(" | ".join(values))
+        text = "\n\n".join(blocks).strip()
+        return text or f"[No readable text found in {path.name}]"
+    except Exception as exc:
+        logger.warning("DOCX extraction failed for %s: %s", path.name, exc)
+        return f"[DOCX extraction failed for {path.name}: {exc}]"
+
+
+def _extract_from_xlsx(path: Path) -> str:
+    """Extract non-empty spreadsheet cells with real sheet boundaries."""
+    if not _XLSX_AVAILABLE:
+        return f"[XLSX extraction unavailable for {path.name} — openpyxl is not installed]"
+    try:
+        workbook = load_workbook(str(path), read_only=True, data_only=True)
+        blocks: list[str] = []
+        for sheet in workbook.worksheets:
+            rows: list[str] = []
+            for row in sheet.iter_rows(values_only=True):
+                values = [str(value).strip() if value is not None else "" for value in row]
+                if any(values):
+                    rows.append(" | ".join(values))
+            blocks.append(f"--- Sheet: {sheet.title} ---\n" + "\n".join(rows))
+        workbook.close()
+        text = "\n\n".join(blocks).strip()
+        return text or f"[No readable cells found in {path.name}]"
+    except Exception as exc:
+        logger.warning("XLSX extraction failed for %s: %s", path.name, exc)
+        return f"[XLSX extraction failed for {path.name}: {exc}]"
 
 
 def _extract_from_pdf(path: Path) -> str:
@@ -107,8 +175,18 @@ def _extract_from_pdf(path: Path) -> str:
     # 2. OCR fallback for scanned PDFs
     if _TESSERACT_AVAILABLE:
         try:
-            from pdf2image import convert_from_path  # type: ignore
-            images = convert_from_path(str(path), dpi=200)
+            try:
+                import fitz  # type: ignore
+                pdf = fitz.open(str(path))
+                images = []
+                for page in pdf:
+                    pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    images.append(Image.open(io.BytesIO(pixmap.tobytes("png"))))
+                pdf.close()
+            except ImportError:
+                # Retained for installations that already provide Poppler.
+                from pdf2image import convert_from_path  # type: ignore
+                images = convert_from_path(str(path), dpi=200)
             ocr_pages = []
             for i, img in enumerate(images):
                 page_text = pytesseract.image_to_string(img, lang="eng").strip()
@@ -119,7 +197,7 @@ def _extract_from_pdf(path: Path) -> str:
                 logger.info("PDF OCR text extracted: %d chars", len(text))
                 return text
         except ImportError:
-            logger.warning("pdf2image not installed — cannot OCR scanned PDF pages")
+            logger.warning("PyMuPDF/pdf2image not installed — cannot OCR scanned PDF pages")
         except Exception as exc:
             logger.warning("PDF OCR failed: %s", exc)
 

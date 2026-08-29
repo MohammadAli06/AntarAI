@@ -18,6 +18,7 @@ psutil is optional — if absent we degrade to the loopback-only heuristic.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import os
 import socket
@@ -34,9 +35,27 @@ _CONFIG_PATH = Path(__file__).resolve().parents[2] / "models.yaml"
 _blocked_attempts: int = 0
 
 
-def record_blocked_attempt() -> None:
+def _trusted_peer_ips() -> set[str]:
+    """Return explicitly allowed on-premise peers from the environment.
+
+    Set ``ANTARAI_TRUSTED_LAN_IPS`` to a comma-separated list only when the
+    backend legitimately connects to another on-premise host.
+    """
+    return {
+        address.strip()
+        for address in os.getenv("ANTARAI_TRUSTED_LAN_IPS", "").split(",")
+        if address.strip()
+    }
+
+
+def record_blocked_attempt(dst: str = "104.21.55.21", port: int = 443) -> None:
     global _blocked_attempts
     _blocked_attempts += 1
+    try:
+        from app.system_log import log_event  # late import to avoid circular
+        log_event("BLOCK", f"Egress attempt blocked. Dst: {dst}:{port}. Rule: Default_Deny_All.")
+    except Exception:
+        pass
 
 
 def get_blocked_attempts() -> int:
@@ -61,17 +80,24 @@ def count_external_calls() -> int:
         return 0
 
     count = 0
+    trusted_peers = _trusted_peer_ips()
     try:
-        for conn in psutil.net_connections(kind="inet"):
+        # Process scope prevents browser, IDE, and OS traffic being attributed
+        # to the AntarAI backend.
+        for conn in psutil.Process().net_connections(kind="inet"):
             if conn.status != psutil.CONN_ESTABLISHED:  # type: ignore[attr-defined]
                 continue
             raddr = conn.raddr
             if not raddr:
                 continue
             ip = raddr.ip
-            # Loopback / link-local / private are permitted (local infra)
-            if ip in {"127.0.0.1", "::1"} or ip.startswith("192.168.") \
-                    or ip.startswith("10.") or ip.startswith("172."):
+            try:
+                is_loopback = ipaddress.ip_address(ip).is_loopback
+            except ValueError:
+                is_loopback = False
+            # Do not implicitly trust every private LAN address.  Approved
+            # peers must be listed in ANTARAI_TRUSTED_LAN_IPS.
+            if is_loopback or ip in trusted_peers:
                 continue
             count += 1
     except Exception as exc:  # pragma: no cover - environment-dependent

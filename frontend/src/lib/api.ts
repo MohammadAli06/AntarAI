@@ -34,6 +34,12 @@ interface RawModel {
   status?: string
   description?: string
   endpoint?: string
+  format?: string
+  quantization?: string
+  vram_gb?: number
+  context_tokens?: number
+  capabilities?: string[]
+  active?: boolean
 }
 
 interface RawSovereigntyStatus {
@@ -191,6 +197,11 @@ export async function fetchOutputs(): Promise<OutputFile[]> {
   return (raw.files || raw.outputs || []).map(normalizeOutput)
 }
 
+export async function fetchArtifactPreview(filename: string): Promise<string> {
+  const raw = await request<{ content?: string }>(`/outputs/${encodeURIComponent(filename)}/preview`)
+  return raw.content || ''
+}
+
 export async function fetchModels(): Promise<ModelInfo[]> {
   const raw = await request<{ models?: RawModel[] }>('/models')
   return (raw.models || []).map((model) => ({
@@ -199,8 +210,15 @@ export async function fetchModels(): Promise<ModelInfo[]> {
     status: model.status || 'unknown',
     description: model.description,
     endpoint: model.endpoint,
+    active: model.active ?? false,
+    format: model.format,
+    quantization: model.quantization,
+    vramGb: model.vram_gb,
+    contextLength: model.context_tokens,
+    capabilities: model.capabilities,
   }))
 }
+
 
 export async function fetchSovereigntyStatus(): Promise<SovereigntyStatus> {
   const raw = await request<RawSovereigntyStatus>('/sovereignty-status')
@@ -214,7 +232,7 @@ export async function fetchSovereigntyStatus(): Promise<SovereigntyStatus> {
     blockedAttempts: raw.blocked_attempts ?? raw.blockedAttempts ?? 0,
     online,
     verdict: raw.verdict,
-    localServices: services.map((s) => ({ port: s.port, name: s.name, address: s.address })),
+    localServices: services.map((s) => ({ port: s.port, name: s.name, address: s.address, online: s.online })),
     modelIntegrity: integrity,
   }
 }
@@ -228,17 +246,32 @@ export async function fetchTasks(mineOnly = false): Promise<import('./types').Ta
     taskType: t.task_type,
     modelUsed: t.model_used,
     promptPreview: t.prompt_preview || '',
+    promptText: t.prompt_text || t.prompt_preview || '',
+    inputFilename: t.input_filename,
+    finalOutput: t.final_output,
     generatedFile: t.generated_file,
     status: t.status,
     timestamp: t.timestamp || new Date().toISOString(),
     risk: t.risk,
     ownerName: t.owner_name,
     evidenceCount: t.evidence_count,
+    artifactSha256: t.artifact_sha256,
+    modelRunId: t.model_run_id,
   }))
 }
 
-export async function approveTask(taskId: number): Promise<void> {
-  await request(`/tasks/${taskId}/approve`, { method: 'POST' })
+export async function approveTask(taskId: number): Promise<{ approval: import('./types').ApprovalRecord }> {
+  const raw = await request<{ status: string; task_id: number; approval: any }>(`/tasks/${taskId}/approve`, { method: 'POST' })
+  return {
+    approval: {
+      approvedBy: raw.approval?.approvedBy ?? '',
+      approvedAt: raw.approval?.approvedAt ?? new Date().toISOString(),
+      taskId: raw.approval?.taskId ?? `TASK-${taskId}`,
+      artifactHash: raw.approval?.artifactHash ?? '',
+      modelRunId: raw.approval?.modelRunId ?? '',
+      evidenceSetId: raw.approval?.evidenceSetId ?? '',
+    },
+  }
 }
 
 export async function rejectTask(taskId: number): Promise<void> {
@@ -355,6 +388,8 @@ export interface ToolInfo {
   status: string
   networkBlocked: boolean
   description?: string
+  enabled?: boolean
+  seeded?: boolean
 }
 
 export interface UserInfo {
@@ -383,6 +418,35 @@ export async function fetchTools(): Promise<ToolInfo[]> {
   return raw.tools ?? []
 }
 
+export interface ModelEntryInput {
+  role: string
+  name: string
+  endpoint: string
+  model_id?: string
+  format?: string
+  quantization?: string
+  vram_gb?: number
+  context_tokens?: number
+  capabilities?: string[]
+  description?: string
+}
+
+export async function addModel(entry: ModelEntryInput): Promise<void> {
+  await request('/admin/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry) })
+}
+
+export async function removeModel(role: string): Promise<void> {
+  await request(`/admin/models/${encodeURIComponent(role)}`, { method: 'DELETE' })
+}
+
+export async function reloadModels(): Promise<void> {
+  await request('/admin/models/reload', { method: 'POST' })
+}
+
+export async function toggleTool(name: string, enabled: boolean): Promise<void> {
+  await request(`/admin/tools/${encodeURIComponent(name)}/toggle?enabled=${enabled}`, { method: 'POST' })
+}
+
 export async function fetchUsers(): Promise<UserInfo[]> {
   const raw = await request<{ users?: UserInfo[] }>('/users')
   return raw.users ?? []
@@ -398,5 +462,37 @@ export async function fetchAudit(): Promise<AuditEntry[]> {
   return raw.events ?? []
 }
 
-export const apiBaseUrl = API_BASE_URL
+// ---------------------------------------------------------------------------
+// Admin system log + metrics
+// ---------------------------------------------------------------------------
 
+export interface SystemLogEntry {
+  ts: string
+  level: 'INFO' | 'RETR' | 'TOOL' | 'BLOCK' | 'WARN' | 'ERROR' | 'INFER'
+  message: string
+}
+
+export interface SystemMetrics {
+  node: string
+  cpu_percent: number
+  ram_used_bytes: number
+  ram_total_bytes: number
+  ram_percent: number
+  gpu_available: boolean
+  gpu_name: string
+  gpu_percent: number
+  vram_used_bytes: number
+  vram_total_bytes: number
+  vram_percent: number
+}
+
+export async function fetchSystemLog(limit = 50): Promise<SystemLogEntry[]> {
+  const raw = await request<{ entries?: SystemLogEntry[] }>(`/system-log?limit=${limit}`)
+  return raw.entries ?? []
+}
+
+export async function fetchSystemMetrics(): Promise<SystemMetrics> {
+  return request<SystemMetrics>('/system-metrics')
+}
+
+export const apiBaseUrl = API_BASE_URL

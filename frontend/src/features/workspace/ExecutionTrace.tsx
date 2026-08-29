@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { Icon } from '../../components/ui/Icon'
 import type { AgentStep, ModelRoute, OcrResult, StepStatus, StepType, ToolRun } from '../../lib/types'
+import { MarkdownContent } from '../../components/ui/MarkdownContent'
 
 interface ExecutionTraceProps {
   steps: AgentStep[]
@@ -27,7 +28,7 @@ interface ExecutionTraceProps {
 // ── Status icon ────────────────────────────────────────────────────────────────
 function StepStatusIcon({ status }: { status: StepStatus }) {
   if (status === 'completed') return <Icon icon={CheckCircle2} size={14} className="text-signal shrink-0" />
-  if (status === 'running') return <Icon icon={Loader2} size={14} className="text-blue-400 animate-spin shrink-0" />
+  if (status === 'running') return <Icon icon={Loader2} size={14} className="text-signal animate-spin shrink-0" />
   if (status === 'failed') return <Icon icon={AlertCircle} size={14} className="text-danger shrink-0" />
   return <span className="size-3.5 rounded-full border border-slate-700 shrink-0" />
 }
@@ -119,6 +120,7 @@ function ModelRoutingCard({ route }: { route: ModelRoute }) {
 // ── Tool Card ──────────────────────────────────────────────────────────────────
 function ToolCard({ tool }: { tool: ToolRun }) {
   const [open, setOpen] = useState(true)
+  const [detailMode, setDetailMode] = useState<'code' | 'output' | null>(null)
   return (
     <div className="border border-line/60 bg-ink/30">
       <button
@@ -161,16 +163,18 @@ function ToolCard({ tool }: { tool: ToolRun }) {
               <span className={tool.exitCode === 0 ? 'text-signal' : 'text-danger'}>{tool.exitCode}</span>
             </div>
           )}
-          {tool.outputPreview && (
+          {(tool.outputPreview || tool.code || tool.codeFile || tool.stdout || tool.stderr) && (
             <div className="mt-2 flex gap-2">
-              <button className="border border-line px-2 py-1 text-[8px] text-muted hover:text-slate-200 transition-colors">
+              <button onClick={() => setDetailMode(detailMode === 'code' ? null : 'code')} className="border border-line px-2 py-1 text-[8px] text-muted hover:text-slate-200 transition-colors">
                 View Code
               </button>
-              <button className="border border-line px-2 py-1 text-[8px] text-muted hover:text-slate-200 transition-colors">
+              <button onClick={() => setDetailMode(detailMode === 'output' ? null : 'output')} className="border border-line px-2 py-1 text-[8px] text-muted hover:text-slate-200 transition-colors">
                 View Output
               </button>
             </div>
           )}
+          {detailMode === 'code' && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border border-line bg-ink/70 p-2 text-[9px] text-slate-300">{tool.code || `Generated file: ${tool.codeFile || 'not available'}`}</pre>}
+          {detailMode === 'output' && <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap border border-line bg-ink/70 p-2 text-[9px] text-slate-300">{tool.stdout || tool.stderr || tool.outputPreview || 'No output was produced.'}</pre>}
         </div>
       )}
     </div>
@@ -180,6 +184,7 @@ function ToolCard({ tool }: { tool: ToolRun }) {
 // ── Knowledge Retrieval Card ───────────────────────────────────────────────────
 function KnowledgeCard({ sources }: { sources: NonNullable<AgentStep['sources']> }) {
   const [open, setOpen] = useState(true)
+  const [inspect, setInspect] = useState(false)
   return (
     <div className="border border-line/60 bg-ink/30">
       <button
@@ -205,9 +210,10 @@ function KnowledgeCard({ sources }: { sources: NonNullable<AgentStep['sources']>
               <span className="text-[9px] text-slate-400 truncate max-w-[120px]">{s.title}</span>
             </div>
           ))}
-          <button className="mt-1 text-[9px] text-signal hover:underline">
-            [Inspect Sources]
+          <button onClick={() => setInspect((value) => !value)} className="mt-1 text-[9px] text-signal hover:underline">
+            [{inspect ? 'Close Sources' : 'Inspect Sources'}]
           </button>
+          {inspect && <div className="mt-2 space-y-2">{sources.map((source) => <div key={source.id} className="border border-line/50 bg-panel/30 p-2"><div className="font-mono text-[8px] text-signal">{source.id} · {Math.round(source.relevanceScore * 100)}%</div><div className="mt-1 text-[9px] text-slate-400 whitespace-pre-wrap">{source.excerpt || 'No excerpt returned.'}</div></div>)}</div>}
         </div>
       )}
     </div>
@@ -223,9 +229,10 @@ function OcrCard({ result }: { result: OcrResult }) {
         <Icon icon={CheckCircle2} size={10} className="text-signal" />
       </div>
       <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-        <div className="flex justify-between col-span-2">
+        {result.pages > 0 && <div className="flex justify-between col-span-2">
           <span className="text-slate-600">Pages</span><span className="text-slate-300">{result.pages}</span>
-        </div>
+        </div>}
+        {(result.sheets ?? 0) > 0 && <div className="flex justify-between col-span-2"><span className="text-slate-600">Sheets</span><span className="text-slate-300">{result.sheets}</span></div>}
         <div className="flex justify-between col-span-2">
           <span className="text-slate-600">Text blocks</span><span className="text-slate-300">{result.textBlocks}</span>
         </div>
@@ -233,7 +240,7 @@ function OcrCard({ result }: { result: OcrResult }) {
           <span className="text-slate-600">Tables</span><span className="text-slate-300">{result.tables}</span>
         </div>
         <div className="flex justify-between col-span-2">
-          <span className="text-slate-600">Confidence</span><span className="text-signal">{Math.round(result.confidence * 100)}%</span>
+          <span className="text-slate-600">Extraction</span><span className={result.succeeded ? 'text-signal' : 'text-danger'}>{result.succeeded ? 'Succeeded' : 'Failed'}</span>
         </div>
         <div className="flex justify-between col-span-2">
           <span className="text-slate-600">External calls</span><span className="text-signal">0</span>
@@ -247,7 +254,7 @@ function OcrCard({ result }: { result: OcrResult }) {
 function StepRow({ step }: { step: AgentStep }) {
   const [expanded, setExpanded] = useState(false)
   const hasDetail =
-    step.modelRoute || step.toolRun || step.sources?.length || step.ocrResult || step.verification
+    step.modelRoute || step.toolRun || step.sources?.length || step.ocrResult || step.verification || step.error
 
   return (
     <div className={`timeline-appear border-b border-line/30 last:border-0`}>
@@ -292,7 +299,7 @@ function StepRow({ step }: { step: AgentStep }) {
                 ))}
               </div>
               <div className="mt-2 flex items-center gap-2">
-                <span className="text-[9px] text-muted">Confidence</span>
+                <span className="text-[9px] text-muted">Verification score</span>
                 <div className="flex-1 h-1 rounded-full bg-ink/60 overflow-hidden">
                   <div
                     className="h-full rounded-full bg-signal"
@@ -305,6 +312,7 @@ function StepRow({ step }: { step: AgentStep }) {
               </div>
             </div>
           )}
+          {step.error && <div className="border border-danger/30 bg-danger/10 px-3 py-2 text-[10px] text-danger whitespace-pre-wrap">{step.error}</div>}
         </div>
       )}
     </div>
@@ -350,7 +358,7 @@ export function ExecutionTrace({ steps, loading }: ExecutionTraceProps) {
 
       {loading && (
         <div className="flex items-center gap-2 px-3 py-2.5">
-          <Icon icon={Loader2} size={12} className="text-blue-400 animate-spin" />
+          <Icon icon={Loader2} size={12} className="text-signal animate-spin" />
           <span className="font-mono text-[10px] text-muted">Processing...</span>
         </div>
       )}
@@ -368,10 +376,15 @@ interface AgentConsoleProps {
   loading: boolean
   response: string
   prompt: string
+  task?: import('../../lib/types').Task | Partial<import('../../lib/types').Task> | null
+  sources?: import('../../lib/types').EvidenceSource[]
+  artifacts?: import('../../lib/types').Artifact[]
+  verification?: import('../../lib/types').VerificationResult
+  onOpenApprovals?: () => void
   children?: React.ReactNode // for TaskComposer slot
 }
 
-export function AgentConsole({ steps, loading, response, prompt, children }: AgentConsoleProps) {
+export function AgentConsole({ steps, loading, response, prompt, task, sources, artifacts, verification, onOpenApprovals, children }: AgentConsoleProps) {
   const [mode, setMode] = useState<ConsoleMode>('execution')
   const MODES: { id: ConsoleMode; label: string }[] = [
     { id: 'conversation', label: 'Conversation' },
@@ -398,8 +411,8 @@ export function AgentConsole({ steps, loading, response, prompt, children }: Age
         ))}
         {loading && (
           <div className="ml-auto flex items-center gap-1.5 pr-4">
-            <Icon icon={Loader2} size={11} className="text-blue-400 animate-spin" />
-            <span className="font-mono text-[8px] text-blue-400">RUNNING</span>
+            <Icon icon={Loader2} size={11} className="text-signal animate-spin" />
+            <span className="font-mono text-[8px] text-signal">RUNNING</span>
           </div>
         )}
       </div>
@@ -408,13 +421,29 @@ export function AgentConsole({ steps, loading, response, prompt, children }: Age
       <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === 'conversation' && (
           <div className="p-4 space-y-4">
+            {!prompt && !response && (
+              <div className="flex h-40 items-center justify-center text-[11px] text-slate-600">
+                Start a conversation with AntarAI…
+              </div>
+            )}
             {prompt && (
               <div className="flex gap-3">
                 <div className="size-7 shrink-0 flex items-center justify-center border border-line bg-panel font-mono text-[8px] text-muted">
                   YOU
                 </div>
-                <div className="flex-1 border border-line bg-panel/60 px-3 py-2.5 text-xs text-slate-200">
+                <div className="flex-1 border border-line bg-panel/60 px-3 py-2.5 text-xs text-slate-200 whitespace-pre-wrap">
                   {prompt}
+                </div>
+              </div>
+            )}
+            {loading && !response && (
+              <div className="flex gap-3">
+                <div className="size-7 shrink-0 flex items-center justify-center border border-signal/30 bg-signal/8 font-mono text-[8px] text-signal">
+                  AI
+                </div>
+                <div className="flex-1 border border-signal/20 bg-signal/5 px-3 py-2.5 text-xs text-muted flex items-center gap-2">
+                  <Icon icon={Loader2} size={12} className="animate-spin text-signal" />
+                  Generating response…
                 </div>
               </div>
             )}
@@ -423,14 +452,9 @@ export function AgentConsole({ steps, loading, response, prompt, children }: Age
                 <div className="size-7 shrink-0 flex items-center justify-center border border-signal/30 bg-signal/8 font-mono text-[8px] text-signal">
                   AI
                 </div>
-                <div className="flex-1 border border-signal/20 bg-signal/5 px-3 py-2.5 text-xs leading-5 text-slate-200">
-                  {response}
+                <div className="flex-1 border border-signal/20 bg-signal/5 px-3 py-2.5 text-xs">
+                  <MarkdownContent content={response} />
                 </div>
-              </div>
-            )}
-            {!prompt && !response && (
-              <div className="flex h-40 items-center justify-center text-[11px] text-slate-600">
-                Start a conversation with AntarAI…
               </div>
             )}
           </div>
@@ -441,18 +465,34 @@ export function AgentConsole({ steps, loading, response, prompt, children }: Age
         )}
 
         {mode === 'summary' && (
-          <div className="p-4">
-            {response ? (
-              <div className="prose-sm text-xs leading-5 text-slate-200 space-y-3">
-                <div className="border-l-2 border-signal/50 pl-3 text-sm font-medium text-slate-100">
-                  Task Complete
-                </div>
-                <p className="text-muted leading-5">{response}</p>
-              </div>
-            ) : (
+          <div className="p-4 space-y-4">
+            {!task && !response ? (
               <div className="flex h-40 items-center justify-center text-[11px] text-slate-600">
                 Summary will appear after task completes
               </div>
+            ) : (
+              <>
+                <div className="border border-line bg-panel/60 p-4">
+                  <div className="font-mono text-[9px] uppercase tracking-wider text-muted mb-3">Task Summary</div>
+                  <div className="space-y-2 text-[11px]">
+                    <div className="flex justify-between"><span className="text-slate-600">Task</span><span className="text-slate-200 font-mono text-[10px]">{task?.id ?? '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Status</span><span className="text-signal uppercase text-[10px]">{task?.status ?? (loading ? 'running' : 'idle')}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Risk</span><span className="uppercase text-[10px] text-slate-200">{(task?.risk as string) ?? '—'}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Sources</span><span className="text-slate-200">{sources?.length ?? 0}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-600">Artifacts</span><span className="text-slate-200">{artifacts?.length ?? 0}</span></div>
+                    {verification && <div className="flex justify-between"><span className="text-slate-600">Verification</span><span className={verification.passed ? 'text-signal' : 'text-danger'}>{verification.checks.filter(c=>c.passed).length}/{verification.checks.length} · {Math.round(verification.confidence*100)}%</span></div>}
+                    {task?.status === 'pending_approval' && <button onClick={onOpenApprovals} className="mt-2 w-full border border-warning/30 bg-warning/10 px-2 py-1.5 text-left text-[10px] text-warning hover:bg-warning/15">Requires approval — open Approval Queue →</button>}
+                    {task?.status === 'failed' && <div className="mt-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[10px] text-danger">Task failed — see Execution for the failed step</div>}
+                  </div>
+                </div>
+                {response && (
+                  <div className="border border-line bg-panel/40 p-3">
+                    <div className="font-mono text-[9px] uppercase tracking-wider text-muted mb-2">Result</div>
+                    <MarkdownContent content={response.slice(0, 800)} className="text-xs" />
+                    {response.length > 800 && <div className="mt-2 text-[9px] text-muted">Truncated — see Result tab for full output</div>}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

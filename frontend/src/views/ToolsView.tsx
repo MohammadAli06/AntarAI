@@ -1,32 +1,34 @@
 import { CheckCircle2, Wrench, XCircle } from 'lucide-react'
+import { useState } from 'react'
 import { Icon } from '../components/ui/Icon'
 import type { ToolInfo } from '../lib/api'
+import { toggleTool } from '../lib/api'
 
 interface ToolsViewProps {
   tools: ToolInfo[]
   loading: boolean
+  isAdmin?: boolean
+  onChanged?: () => Promise<void>
 }
 
-const FALLBACK_TOOLS: ToolInfo[] = [
-  { name: 'Python Sandbox', toolType: 'sandbox', status: 'online', networkBlocked: true, description: 'Hardened subprocess — network blocked, cwd jail, resource caps.' },
-  { name: 'OCR Engine', toolType: 'ocr', status: 'online', networkBlocked: false, description: 'Tesseract — on-device text extraction.' },
-  { name: 'Document Generator', toolType: 'document-gen', status: 'online', networkBlocked: false, description: 'python-docx — MRPL-branded Word deliverables.' },
-  { name: 'Vector Store', toolType: 'rag', status: 'online', networkBlocked: false, description: 'ChromaDB + all-MiniLM-L6-v2 — local retrieval.' },
-  { name: 'Artifact Verifier', toolType: 'verification', status: 'online', networkBlocked: false, description: 'Re-execution + structural checks with SHA-256.' },
-  { name: 'Local Model', toolType: 'model', status: 'online', networkBlocked: false, description: 'Qwen3-8B-Q4_K_M via llama.cpp — air-gapped.' },
-]
-
 const TYPE_COLORS: Record<string, string> = {
-  sandbox: 'border-purple-500/30 bg-purple-500/8 text-purple-400',
+  sandbox: 'border-amber-500/30 bg-amber-500/8 text-amber-400',
   ocr: 'border-warning/30 bg-warning/8 text-warning',
-  'document-gen': 'border-blue-500/30 bg-blue-500/8 text-blue-400',
-  rag: 'border-emerald-500/30 bg-emerald-500/8 text-emerald-400',
+  'document-gen': 'border-signal/30 bg-signal/8 text-signal',
+  rag: 'border-orange-500/30 bg-orange-500/8 text-orange-400',
   verification: 'border-signal/30 bg-signal/8 text-signal',
   model: 'border-signal/30 bg-signal/8 text-signal',
 }
 
-export function ToolsView({ tools, loading }: ToolsViewProps) {
-  const display = tools.length > 0 ? tools : FALLBACK_TOOLS
+export function ToolsView({ tools, loading, isAdmin = false, onChanged }: ToolsViewProps) {
+  const display = tools
+  const [actionError, setActionError] = useState('')
+
+  async function changeTool(tool: ToolInfo) {
+    setActionError('')
+    try { await toggleTool(tool.name, !(tool.enabled ?? true)); await onChanged?.() }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Could not update tool') }
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -45,8 +47,10 @@ export function ToolsView({ tools, loading }: ToolsViewProps) {
             Probing tool availability…
           </div>
         )}
+        {actionError && <div className="border border-danger/30 bg-danger/10 px-4 py-3 text-xs text-danger">{actionError}</div>}
 
         <div className="grid gap-3 sm:grid-cols-2">
+          {!loading && display.length === 0 && <div className="text-xs text-muted">No live tool registry data available.</div>}
           {display.map((tool) => {
             const online = tool.status === 'online'
             return (
@@ -65,11 +69,12 @@ export function ToolsView({ tools, loading }: ToolsViewProps) {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Icon icon={online ? CheckCircle2 : XCircle} size={13} className={online ? 'text-signal' : 'text-danger'} />
-                    <span className={`font-mono text-[9px] ${online ? 'text-signal' : 'text-danger'}`}>{online ? 'ONLINE' : 'OFFLINE'}</span>
+                    <span className={`font-mono text-[9px] ${online ? 'text-signal' : 'text-danger'}`}>{tool.status.toUpperCase()}</span>
                   </div>
                 </div>
 
                 <p className="mt-3 text-[10px] leading-4 text-muted">{tool.description}</p>
+                {tool.toolType === 'rag' && <div className="mt-2 font-mono text-[9px] text-muted">Corpus: {tool.seeded ? 'SEEDED' : 'EMPTY'}</div>}
 
                 <div className="mt-3 flex items-center justify-between border-t border-line/50 pt-2">
                   <span className="font-mono text-[8px] uppercase tracking-wider text-slate-600">Network</span>
@@ -77,6 +82,7 @@ export function ToolsView({ tools, loading }: ToolsViewProps) {
                     {tool.networkBlocked ? 'BLOCKED' : 'N/A'}
                   </span>
                 </div>
+                {isAdmin && <button disabled={loading} onClick={() => void changeTool(tool)} className={`mt-3 w-full border px-3 py-2 font-mono text-[9px] ${tool.enabled === false ? 'border-signal/30 text-signal' : 'border-warning/30 text-warning'}`}>{tool.enabled === false ? 'ENABLE TOOL' : 'DISABLE TOOL'}</button>}
               </div>
             )
           })}
