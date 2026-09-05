@@ -3,7 +3,7 @@ import { Bell, Cpu, Lock, Shield, ShieldCheck, User } from 'lucide-react'
 import { Sidebar, MobileMenuButton } from './Sidebar'
 import { Icon } from '../ui/Icon'
 import { ThemeToggle } from '../ui/ThemeToggle'
-import type { SovereigntyStatus, Theme, UserRole, ViewId } from '../../lib/types'
+import type { ConversationSummary, SovereigntyStatus, Theme, UserRole, ViewId } from '../../lib/types'
 import { getUser } from '../../lib/auth'
 
 interface AppShellProps {
@@ -24,6 +24,17 @@ interface AppShellProps {
   onDemoRoleChange: (role: UserRole) => void
   demoMode: boolean
   switching?: boolean
+  conversations?: ConversationSummary[]
+  activeConversationId?: number | null
+  onSelectConversation?: (id: number) => void
+  onNewConversation?: () => void
+  onRenameConversation?: (id: number, title: string) => void
+  onDeleteConversation?: (id: number) => void
+  onArchiveConversation?: (id: number, archived: boolean) => void
+  onRefreshConversations?: () => void
+  conversationsLoading?: boolean
+  conversationSearch?: string
+  onConversationSearchChange?: (v: string) => void
 }
 
 const DEMO_ROLES: { value: UserRole; label: string }[] = [
@@ -49,6 +60,17 @@ export function AppShell({
   onDemoRoleChange,
   demoMode,
   switching,
+  conversations,
+  activeConversationId,
+  onSelectConversation,
+  onNewConversation,
+  onRenameConversation,
+  onDeleteConversation,
+  onArchiveConversation,
+  onRefreshConversations,
+  conversationsLoading,
+  conversationSearch,
+  onConversationSearchChange,
 }: AppShellProps) {
   const user = getUser()
   const isAirGapped = sovereignty?.online !== false && sovereignty?.externalCalls === 0
@@ -64,6 +86,17 @@ export function AppShell({
         mobileOpen={mobileOpen}
         onCloseMobile={onCloseMobile}
         role={demoRole}
+        conversations={conversations}
+        activeConversationId={activeConversationId}
+        onSelectConversation={onSelectConversation}
+        onNewConversation={onNewConversation}
+        onRenameConversation={onRenameConversation}
+        onDeleteConversation={onDeleteConversation}
+        onArchiveConversation={onArchiveConversation}
+        onRefreshConversations={onRefreshConversations}
+        conversationsLoading={conversationsLoading}
+        conversationSearch={conversationSearch}
+        onConversationSearchChange={onConversationSearchChange}
       />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* ── Persistent Header ──────────────────────────────────────────── */}

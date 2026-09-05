@@ -1,0 +1,78 @@
+# AntarAI Sovereign Catalog — curated open-weight models pre-approved for admission.
+#
+# This is NOT a live Hugging Face browser. Every entry describes a model the
+# organisation has vetted; the GGUF must already be physically present under
+# backend/models (offline package / internal repository / USB import).
+# Admission runs: integrity → GGUF metadata → hardware fit → policy → node →
+# port → registration → health check. Nothing is ever downloaded at runtime.
+#
+# entries:
+#   key:           stable id used by the Model Center
+#   name:          display name
+#   model_id:      upstream identifier (provenance only, never fetched)
+#   capability:    suggested routing slot (general / coder / vision)
+#   family:        vendor family for grouping
+#   description:   one-line purpose
+#   parameters:    size class label (e.g. 8B)
+#   quantization:  suggested quant
+#   size_gb:       approximate download/package size
+#   context:       default context window
+#   model_path:    expected file under backend/models (may not exist yet — the
+#                  wizard then asks the admin to import the offline package)
+#   sha256:        optional pinned checksum; enforced when present
+#   capabilities:  tags shown on the card
+
+models:
+  qwen3-8b-general:
+    name: Qwen3-8B
+    model_id: Qwen/Qwen3-8B-GGUF
+    capability: general
+    family: Qwen
+    description: General reasoning, document analysis and summarization.
+    parameters: 8B
+    quantization: Q4_K_M
+    size_gb: 5.0
+    context: 4096
+    model_path: Qwen3-8B-Q4_K_M.gguf
+    sha256: ""
+    capabilities:
+      - Reasoning
+      - Document analysis
+      - Summarization
+      - Multilingual
+
+  qwen3-vl-8b-vision:
+    name: Qwen3-VL-8B
+    model_id: Qwen/Qwen3-VL-8B-Instruct-GGUF
+    capability: vision
+    family: Qwen
+    description: Multimodal vision model for images, scanned documents and P&IDs.
+    parameters: 8B
+    quantization: Q4_K_M
+    size_gb: 6.0
+    context: 4096
+    model_path: Qwen3-VL-8B-Instruct-Q4_K_M.gguf
+    sha256: ""
+    capabilities:
+      - Image understanding
+      - OCR
+      - P&ID reading
+      - Chart analysis
+
+  ornith-9b-coder:
+    name: Ornith-1.0-9B
+    model_id: DreamFoundries/Ornith-1.0-9B
+    capability: coder
+    family: Other
+    description: Agentic coding model for Python, calculations and sandbox execution.
+    parameters: 9B
+    quantization: Q4_K_M
+    size_gb: 6.5
+    context: 4096
+    model_path: Ornith-1.0-9B-Q4_K_M.gguf
+    sha256: ""
+    capabilities:
+      - Code generation
+      - Debugging
+      - Tool use
+      - Data analysis

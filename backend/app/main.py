@@ -36,8 +36,21 @@ from app.auth import (
     require_role,
     verify_password,
 )
-from app.database import Document, SessionLocal, Task, User, create_tables, get_db
+from app.database import (
+    Attachment,
+    Conversation,
+    Document,
+    Message,
+    ModelAdmission,
+    SessionLocal,
+    Task,
+    TaskAccess,
+    User,
+    create_tables,
+    get_db,
+)
 from app.models import registry as model_registry
+from app.models import admission as model_admission
 from app.models.registry import get_call_count, list_models
 from app.models.schemas import ModelEntry
 from app.system_log import get_recent, log_event
@@ -144,6 +157,15 @@ class SovereigntyStatus(BaseModel):
 
 class SwitchRoleRequest(BaseModel):
     role: str
+
+
+class CreateConversationRequest(BaseModel):
+    title: Optional[str] = None
+
+
+class UpdateConversationRequest(BaseModel):
+    title: Optional[str] = None
+    archived: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +298,89 @@ def _persist_task_update(task_id: int, **fields) -> None:
         s.close()
 
 
+def _conversation_or_404(db: Session, conv_id: int, current_user: Principal) -> Conversation:
+    conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+    if not conv:
+        raise HTTPException(status_code=404, detail=f"Conversation #{conv_id} not found")
+    if conv.user_id != current_user.id and current_user.role not in {"admin"}:
+        raise HTTPException(status_code=403, detail="Not your conversation")
+    if conv.deleted_at is not None:
+        raise HTTPException(status_code=410, detail="Conversation deleted")
+    return conv
+
+
+def _conversation_to_dict(conv: Conversation, message_count: Optional[int] = None, last_message: Optional[str] = None) -> dict:
+    preview = (conv.title or "New conversation").strip() or "New conversation"
+    return {
+        "id": conv.id,
+        "user_id": conv.user_id,
+        "title": preview,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+        "archived": bool(conv.archived),
+        "message_count": message_count,
+        "last_message_preview": (last_message or "")[:160] if last_message is not None else None,
+    }
+
+
+def _message_to_dict(m: Message, attachments: Optional[list[Attachment]] = None) -> dict:
+    return {
+        "id": m.id,
+        "conversation_id": m.conversation_id,
+        "role": m.role,
+        "content": m.content,
+        "task_id": m.task_id,
+        "created_at": m.created_at.isoformat() if m.created_at else None,
+        "attachments": [
+            {"id": a.id, "filename": a.filename, "file_type": a.file_type, "file_path": a.file_path, "size_bytes": a.size_bytes}
+            for a in (attachments or [])
+        ],
+    }
+
+
+def _task_visible_to(task: Task, viewer: Principal, db: Session) -> bool:
+    if task.user_id == viewer.id:
+        return True
+    if viewer.role in {"admin", "approver"}:
+        if task.status in {"pending_approval", "approved", "rejected"}:
+            return True
+        has_grant = db.query(TaskAccess).filter(TaskAccess.task_id == task.id, TaskAccess.user_id == viewer.id).first() is not None
+        if has_grant:
+            return True
+        if viewer.role == "admin":
+            return True
+    return False
+
+
+def _build_conversation_history(db: Session, conversation_id: int, limit: int = 12) -> list[dict]:
+    """Load prior messages (with file names) to thread into the model prompt."""
+    rows = (
+        db.query(Message)
+        .filter(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.asc())
+        .all()
+    )
+    if not rows:
+        return []
+    rows = rows[-limit:]
+    history: list[dict] = []
+    for m in rows:
+        atts = db.query(Attachment).filter(Attachment.message_id == m.id).all()
+        history.append({
+            "role": m.role,
+            "content": m.content or "",
+            "attachments": [a.filename for a in atts],
+        })
+    return history
+
+
+def _auto_title(text: str) -> str:
+    t = " ".join((text or "").strip().split())
+    if not t:
+        return "New conversation"
+    return t[:72]
+
+
 def _task_to_dict(t: Task, owner_name: Optional[str] = None) -> dict:
     """Serialise a Task row, including provenance + verification fields."""
     verification = None
@@ -364,20 +469,26 @@ async def login(body: LoginRequest, db: Session = Depends(get_db)):
 async def chat(
     message: str = Form(...),
     file: Optional[UploadFile] = File(None),
-    current_user: User = Depends(get_current_user),
+    conversation_id: Optional[int] = Form(None),
+    current_user: Principal = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Main chat endpoint.
-    Accepts a message and optional file. Routes to the appropriate model
-    via the agent orchestrator, logs the task, and returns the response.
+    Main chat endpoint (legacy JSON). If conversation_id is supplied it must be
+    owned by the caller; otherwise a new conversation is created for continuity.
     """
+    conv = None
+    history: list[dict] = []
+    if conversation_id is not None:
+        conv = _conversation_or_404(db, conversation_id, current_user)
+        history = _build_conversation_history(db, conv.id)
+
     file_path: Optional[str] = None
     filename: Optional[str] = None
     has_file = file is not None and file.filename
 
     if has_file:
-        filename = file.filename
+        filename = Path(file.filename).name
         ext = Path(filename).suffix.lower()
         save_dir = (
             _IMAGES_DIR
@@ -388,8 +499,6 @@ async def chat(
         with open(dest, "wb") as f:
             f.write(await file.read())
         file_path = str(dest)
-
-        # Log the uploaded document
         doc = Document(
             filename=filename,
             file_type=ext.lstrip("."),
@@ -401,20 +510,33 @@ async def chat(
         db.add(doc)
         db.commit()
 
-    # Run the agentic pipeline
+    if conv is None:
+        conv = Conversation(user_id=current_user.id, title=_auto_title(message))
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
+    conv.updated_at = datetime.utcnow()
+    db.add(Message(conversation_id=conv.id, role="user", content=message))
+    db.commit()
+
     result = run_agent(
         message=message,
         has_file=bool(has_file),
         filename=filename,
         file_path=file_path,
+        history=history,
     )
 
-    # Determine status: approval notes require supervisor approval
-    initial_status = "pending_approval" if result.generated_file else "approved"
+    if file_path and filename:
+        last_user = db.query(Message).filter(Message.conversation_id == conv.id, Message.role == "user").order_by(Message.id.desc()).first()
+        db.add(Attachment(conversation_id=conv.id, message_id=last_user.id if last_user else None, file_path=file_path, filename=filename, file_type=Path(filename).suffix.lstrip("."), size_bytes=Path(file_path).stat().st_size if Path(file_path).exists() else None))
+        db.commit()
 
-    # Log the task to history
+    initial_status = "pending_approval" if result.generated_file else "approved"
     task = Task(
         user_id=current_user.id,
+        conversation_id=conv.id,
         task_type=result.model_used,
         model_used=result.model_used,
         prompt_preview=message[:120],
@@ -426,6 +548,14 @@ async def chat(
     )
     db.add(task)
     db.commit()
+    db.refresh(task)
+
+    assistant_msg = Message(conversation_id=conv.id, role="assistant", content=result.response, task_id=task.id)
+    db.add(assistant_msg)
+    db.commit()
+    if conv.title == "New conversation" and message.strip():
+        conv.title = _auto_title(message)
+        db.commit()
 
     return ChatResponse(
         response=result.response,
@@ -443,19 +573,48 @@ async def chat(
 async def chat_stream(
     message: str = Form(...),
     file: Optional[UploadFile] = File(None),
+    conversation_id: Optional[int] = Form(None),
     current_user: Principal = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Stream the agentic pipeline as Server-Sent Events.
 
-    The frontend consumes this via fetch + ReadableStream (not EventSource,
-    which is GET-only). Each yielded chunk is `data: {json}\\n\\n`.
+    conversation_id — when supplied, must belong to the caller and the prior
+    turns (including file references) are threaded into the model prompt so a
+    follow-up like "what about the left side?" sees the same image. Auth +
+    conversation-ownership is enforced BEFORE any model work.
     """
+    conv = None
+    history: list[dict] = []
+    if conversation_id is not None:
+        conv = _conversation_or_404(db, conversation_id, current_user)
+        history = _build_conversation_history(db, conv.id)
+    else:
+        conv = Conversation(user_id=current_user.id, title=_auto_title(message))
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
     file_path, filename, has_file = _save_attached_file(file, current_user, db)
 
-    # Create the task row up-front (status = planning)
+    # Persist the user turn up-front so history is complete even if the stream is cancelled.
+    user_msg = Message(conversation_id=conv.id, role="user", content=message)
+    db.add(user_msg)
+    db.commit()
+    db.refresh(user_msg)
+    if file_path and filename:
+        db.add(Attachment(conversation_id=conv.id, message_id=user_msg.id, file_path=file_path, filename=filename, file_type=Path(filename).suffix.lstrip("."), size_bytes=Path(file_path).stat().st_size if Path(file_path).exists() else None))
+        db.commit()
+    if conv.title == "New conversation" and message.strip():
+        conv.title = _auto_title(message)
+        conv.updated_at = datetime.utcnow()
+        db.commit()
+    db.refresh(conv)
+    conv_id_value = conv.id
+
     task = Task(
         user_id=current_user.id,
+        conversation_id=conv_id_value,
         task_type="general",
         model_used="pending",
         prompt_preview=message[:120],
@@ -470,11 +629,12 @@ async def chat_stream(
     task_id = f"TASK-{task.id}"
 
     def event_generator():
-        for ev in run_agent_stream(message, has_file, filename, file_path):
+        final_response: Optional[str] = None
+        final_status_holder: list[Optional[str]] = [None]
+        for ev in run_agent_stream(message, has_file, filename, file_path, history=history):
             etype = ev["type"]
             data = ev.get("data", {})
 
-            # Persist real status transitions
             if etype == "router.completed":
                 _persist_task_update(
                     task_db_id,
@@ -486,6 +646,8 @@ async def chat_stream(
             elif etype == "verification.started":
                 _persist_task_update(task_db_id, status="verifying")
             elif etype == "task.completed":
+                final_response = data.get("response")
+                final_status_holder[0] = data.get("status", "completed")
                 _persist_task_update(
                     task_db_id,
                     status=data.get("status", "completed"),
@@ -498,18 +660,31 @@ async def chat_stream(
                     final_output=data.get("response"),
                 )
             elif etype == "task.failed":
+                final_status_holder[0] = "failed"
                 _persist_task_update(task_db_id, status="failed")
 
             payload = {
                 "type": etype,
                 "taskId": task_id,
+                "conversationId": conv_id_value,
                 "stepId": ev.get("stepId"),
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "data": data,
             }
             yield f"data: {json.dumps(payload)}\n\n"
 
-        yield f"data: {json.dumps({'type': 'stream.end', 'taskId': task_id, 'timestamp': datetime.utcnow().isoformat() + 'Z'})}\n\n"
+        if final_response is not None:
+            s2 = SessionLocal()
+            try:
+                s2.add(Message(conversation_id=conv_id_value, role="assistant", content=final_response, task_id=task_db_id))
+                c2 = s2.query(Conversation).filter(Conversation.id == conv_id_value).first()
+                if c2:
+                    c2.updated_at = datetime.utcnow()
+                s2.commit()
+            finally:
+                s2.close()
+
+        yield f"data: {json.dumps({'type': 'stream.end', 'taskId': task_id, 'conversationId': conv_id_value, 'timestamp': datetime.utcnow().isoformat() + 'Z'})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -522,8 +697,176 @@ async def chat_stream(
     )
 
 
+# ---------------------------------------------------------------------------
+# Conversations — user-owned history (auth + ownership enforced server-side)
+# ---------------------------------------------------------------------------
+
+@app.get("/conversations", tags=["conversations"])
+async def list_conversations(
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    q: Optional[str] = None,
+    limit: int = 100,
+    include_archived: bool = False,
+):
+    """List conversations belonging to the caller. No role-based bypass."""
+    query = db.query(Conversation).filter(
+        Conversation.user_id == current_user.id,
+        Conversation.deleted_at.is_(None),
+    )
+    if not include_archived:
+        query = query.filter(Conversation.archived.is_(False))
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        query = query.filter(Conversation.title.ilike(like))
+    convs = query.order_by(Conversation.updated_at.desc()).limit(limit).all()
+    result = []
+    for c in convs:
+        last = db.query(Message).filter(Message.conversation_id == c.id).order_by(Message.id.desc()).first()
+        count = db.query(Message).filter(Message.conversation_id == c.id).count()
+        result.append(_conversation_to_dict(c, message_count=count, last_message=last.content if last else None))
+    return {"conversations": result}
+
+
+@app.post("/conversations", tags=["conversations"])
+async def create_conversation(
+    body: CreateConversationRequest,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    title = (body.title or "New conversation").strip() or "New conversation"
+    conv = Conversation(user_id=current_user.id, title=title[:120])
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return {"conversation": _conversation_to_dict(conv, message_count=0, last_message=None)}
+
+
+@app.get("/conversations/{conversation_id}", tags=["conversations"])
+async def get_conversation(
+    conversation_id: int,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conv = _conversation_or_404(db, conversation_id, current_user)
+    messages = db.query(Message).filter(Message.conversation_id == conv.id).order_by(Message.created_at.asc()).all()
+    tasks = {t.id: t for t in db.query(Task).filter(Task.conversation_id == conv.id).all()}
+    enriched = []
+    for m in messages:
+        atts = db.query(Attachment).filter(Attachment.message_id == m.id).all()
+        task_dict = _task_to_dict(tasks[m.task_id]) if m.task_id and m.task_id in tasks else None
+        enriched.append({**_message_to_dict(m, atts), "task": task_dict})
+    atts_all = db.query(Attachment).filter(Attachment.conversation_id == conv.id).all()
+    return {
+        "conversation": _conversation_to_dict(conv, message_count=len(messages), last_message=messages[-1].content if messages else None),
+        "messages": enriched,
+        "attachments": [
+            {"id": a.id, "filename": a.filename, "file_type": a.file_type, "file_path": a.file_path, "size_bytes": a.size_bytes, "message_id": a.message_id}
+            for a in atts_all
+        ],
+    }
+
+
+@app.patch("/conversations/{conversation_id}", tags=["conversations"])
+async def update_conversation(
+    conversation_id: int,
+    body: UpdateConversationRequest,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conv = _conversation_or_404(db, conversation_id, current_user)
+    if body.title is not None:
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        conv.title = title[:120]
+    if body.archived is not None:
+        conv.archived = bool(body.archived)
+    conv.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(conv)
+    return {"conversation": _conversation_to_dict(conv)}
+
+
+@app.delete("/conversations/{conversation_id}", tags=["conversations"])
+async def delete_conversation(
+    conversation_id: int,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conv = _conversation_or_404(db, conversation_id, current_user)
+    conv.deleted_at = datetime.utcnow()
+    conv.archived = True
+    db.commit()
+    return {"status": "deleted", "conversation_id": conv.id}
+
+
+@app.get("/conversations/{conversation_id}/tasks", tags=["conversations"])
+async def list_conversation_tasks(
+    conversation_id: int,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    conv = _conversation_or_404(db, conversation_id, current_user)
+    tasks = db.query(Task).filter(Task.conversation_id == conv.id).order_by(Task.timestamp.asc()).all()
+    return {"conversation_id": conv.id, "tasks": [_task_to_dict(t) for t in tasks]}
+
+
+# ---------------------------------------------------------------------------
+# Task detail + governed visibility: owner always; approver/admin via status/access
+# ---------------------------------------------------------------------------
+
+@app.get("/tasks/{task_id}", tags=["history"])
+async def get_task_detail(
+    task_id: int,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task #{task_id} not found")
+    if not _task_visible_to(task, current_user, db):
+        raise HTTPException(status_code=403, detail="Not authorized to view this task")
+    owner = db.query(User).filter(User.id == task.user_id).first()
+    detail = _task_to_dict(task, owner_name=owner.username if owner else None)
+    # Attach conversation slice (still governed by _task_visible_to above)
+    conv_msgs: list[dict] = []
+    if task.conversation_id:
+        for m in db.query(Message).filter(Message.conversation_id == task.conversation_id).order_by(Message.created_at.asc()).all():
+            conv_msgs.append(_message_to_dict(m, db.query(Attachment).filter(Attachment.message_id == m.id).all()))
+    return {"task": detail, "messages": conv_msgs if task.conversation_id else []}
+
+
+@app.post("/tasks/{task_id}/share", tags=["approvals"])
+async def share_task_for_review(
+    task_id: int,
+    body: dict,
+    current_user: Principal = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Owner shares a governed task with an approver (task-level controlled sharing)."""
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task #{task_id} not found")
+    if task.user_id != current_user.id and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only the task owner (or admin) can share it")
+    target_username = str(body.get("username") or body.get("user") or "").strip()
+    if not target_username:
+        raise HTTPException(status_code=400, detail="username is required")
+    target = db.query(User).filter(User.username == target_username).first()
+    if not target:
+        raise HTTPException(status_code=404, detail=f"User '{target_username}' not found")
+    if target.role not in {"approver", "admin"}:
+        raise HTTPException(status_code=400, detail="Can only share with approver/admin roles")
+    existing = db.query(TaskAccess).filter(TaskAccess.task_id == task.id, TaskAccess.user_id == target.id).first()
+    if not existing:
+        db.add(TaskAccess(task_id=task.id, user_id=target.id, access_type=str(body.get("access_type") or "review")))
+        db.commit()
+    return {"status": "shared", "task_id": task.id, "shared_with": target.username}
+
+
 @app.get("/models", tags=["models"])
-async def get_models(current_user: User = Depends(get_current_user)):
+async def get_models(current_user: Principal = Depends(get_current_user)):
     """Return list of configured models and their current status."""
     return {"models": list_models()}
 
@@ -595,6 +938,143 @@ async def reload_registered_models(
 ):
     model_registry.reload_models()
     return {"status": "reloaded", "models": model_registry.list_models()}
+
+
+# ---------------------------------------------------------------------------
+# Model Center — sovereign model admission pipeline
+# ---------------------------------------------------------------------------
+
+class AdmissionPrecheckRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    source: str = "catalog"           # catalog | local | offline-package
+    role: str = "general"
+    catalog_key: Optional[str] = None
+    model_path: str = ""
+
+
+class AdmissionStartRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    source: str = "catalog"
+    role: str = "general"
+    catalog_key: Optional[str] = None
+    model_path: str = ""
+    description: str = ""
+    capabilities: Optional[list] = None
+    runtime_context_tokens: int = 4096
+
+
+@app.get("/admin/models/catalog", tags=["admin"])
+async def model_catalog(current_user: Principal = Depends(require_role(["admin"]))):
+    """Curated sovereign catalog + locally available GGUF packages."""
+    return {
+        "catalog": model_admission.catalog_entries(),
+        "local_files": model_registry.list_model_files(),
+        "policy": (yaml.safe_load((_BACKEND_ROOT / "policies.yaml").read_text(encoding="utf-8")) or {}).get("model_admission", {}),
+    }
+
+
+@app.post("/admin/models/admission/precheck", tags=["admin"])
+async def admission_precheck(
+    body: AdmissionPrecheckRequest,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    """Run the admission gate synchronously — the wizard's fit-check screen."""
+    return model_admission.precheck(
+        source=body.source,
+        role=body.role,
+        catalog_key=body.catalog_key,
+        model_path=body.model_path,
+    )
+
+
+@app.post("/admin/models/admission/stream", tags=["admin"])
+async def admission_stream(
+    body: AdmissionStartRequest,
+    current_user: Principal = Depends(require_role(["admin"])),
+):
+    """Run the full Model Admission Pipeline as Server-Sent Events."""
+
+    def persist_audit(summary: dict) -> Optional[int]:
+        session = SessionLocal()
+        try:
+            record = ModelAdmission(
+                model_name=summary["model_name"],
+                catalog_key=summary.get("catalog_key") or None,
+                source=summary.get("source", "local"),
+                role=summary.get("role", "general"),
+                sha256=summary.get("sha256", ""),
+                node=summary.get("node"),
+                port=summary.get("port"),
+                checks_json=json.dumps(summary.get("checks", [])),
+                metadata_json=json.dumps(summary.get("metadata", {})),
+                admitted_by=summary.get("admitted_by", current_user.username),
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record.id
+        finally:
+            session.close()
+
+    def event_generator():
+        for ev in model_admission.admit_model_stream(
+            source=body.source,
+            role=body.role,
+            catalog_key=body.catalog_key,
+            model_path=body.model_path,
+            description=body.description,
+            capabilities=body.capabilities or [],
+            runtime_context_tokens=body.runtime_context_tokens,
+            admitted_by=current_user.username,
+            persist_audit=persist_audit,
+        ):
+            yield f"data: {json.dumps(ev)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/admin/models/admissions", tags=["admin"])
+async def admission_history(
+    current_user: Principal = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db),
+):
+    """Audit trail of every model admitted through the Model Center."""
+    rows = db.query(ModelAdmission).order_by(ModelAdmission.admitted_at.desc()).limit(50).all()
+    result = []
+    for row in rows:
+        checks = None
+        metadata = None
+        if row.checks_json:
+            try:
+                checks = json.loads(row.checks_json)
+            except ValueError:
+                checks = None
+        if row.metadata_json:
+            try:
+                metadata = json.loads(row.metadata_json)
+            except ValueError:
+                metadata = None
+        result.append({
+            "id": row.id,
+            "model_name": row.model_name,
+            "catalog_key": row.catalog_key,
+            "source": row.source,
+            "role": row.role,
+            "sha256": row.sha256,
+            "node": row.node,
+            "port": row.port,
+            "checks": checks,
+            "metadata": metadata,
+            "admitted_by": row.admitted_by,
+            "admitted_at": row.admitted_at.isoformat() if row.admitted_at else None,
+        })
+    return {"admissions": result}
 
 
 @app.post("/upload", tags=["files"])

@@ -25,8 +25,9 @@ import {
   Bot,
 } from 'lucide-react'
 import { Icon } from '../ui/Icon'
-import type { UserRole, ViewId } from '../../lib/types'
+import type { ConversationSummary, UserRole, ViewId } from '../../lib/types'
 import { getUser } from '../../lib/auth'
+import { ConversationHistory } from './ConversationHistory'
 
 interface SidebarProps {
   activeView: ViewId
@@ -37,6 +38,17 @@ interface SidebarProps {
   mobileOpen: boolean
   onCloseMobile: () => void
   role: UserRole
+  conversations?: ConversationSummary[]
+  activeConversationId?: number | null
+  onSelectConversation?: (id: number) => void
+  onNewConversation?: () => void
+  onRenameConversation?: (id: number, title: string) => void
+  onDeleteConversation?: (id: number) => void
+  onArchiveConversation?: (id: number, archived: boolean) => void
+  onRefreshConversations?: () => void
+  conversationsLoading?: boolean
+  conversationSearch?: string
+  onConversationSearchChange?: (v: string) => void
 }
 
 // ── Nav definitions per role ──────────────────────────────────────────────────
@@ -92,7 +104,27 @@ const ROLE_LABEL: Record<UserRole, string> = {
   admin: 'Admin',
 }
 
-export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle, mobileOpen, onCloseMobile, role }: SidebarProps) {
+export function Sidebar({
+  activeView,
+  onNavigate,
+  onLogout,
+  collapsed,
+  onToggle,
+  mobileOpen,
+  onCloseMobile,
+  role,
+  conversations,
+  activeConversationId,
+  onSelectConversation,
+  onNewConversation,
+  onRenameConversation,
+  onDeleteConversation,
+  onArchiveConversation,
+  onRefreshConversations,
+  conversationsLoading,
+  conversationSearch,
+  onConversationSearchChange,
+}: SidebarProps) {
   const user = getUser()
 
   const nav: NavEntry[] =
@@ -154,6 +186,24 @@ export function Sidebar({ activeView, onNavigate, onLogout, collapsed, onToggle,
               {ROLE_LABEL[role]}
             </span>
           </div>
+        )}
+
+        {/* Conversation history — user-owned, server-enforced */}
+        {conversations && onSelectConversation && onNewConversation && onRenameConversation && onDeleteConversation && onRefreshConversations && onConversationSearchChange != null && conversationSearch != null && (
+          <ConversationHistory
+            conversations={conversations}
+            activeId={activeConversationId ?? null}
+            onSelect={onSelectConversation}
+            onNew={onNewConversation}
+            onRename={onRenameConversation}
+            onDelete={onDeleteConversation}
+            onArchiveToggle={onArchiveConversation}
+            onRefresh={onRefreshConversations}
+            loading={!!conversationsLoading}
+            search={conversationSearch}
+            onSearchChange={onConversationSearchChange}
+            collapsed={collapsed}
+          />
         )}
 
         {/* Navigation */}

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle2, HelpCircle, Loader2, Play } from 'lucide-react'
-import { streamChat } from '../lib/api'
+import { fetchConversation, streamChat } from '../lib/api'
 import { getUser } from '../lib/auth'
 import { Icon } from '../components/ui/Icon'
 import type {
   AgentStep,
   Artifact,
+  ConversationMessage,
   EvidenceSource,
   RiskLevel,
   SovereigntyStatus,
@@ -32,6 +33,9 @@ interface WorkspaceViewProps {
   onRefreshSovereignty: () => void
   activeTemplate?: WorkflowTemplate | null
   onNavigate: (view: ViewId) => void
+  activeConversationId?: number | null
+  onConversationChange?: (id: number | null) => void
+  onConversationsRefresh?: () => void
 }
 
 // Backend stream event (loosely typed — the reducer switches on `type`).
@@ -66,6 +70,9 @@ export function WorkspaceView({
   onRefreshSovereignty,
   activeTemplate,
   onNavigate,
+  activeConversationId,
+  onConversationChange,
+  onConversationsRefresh,
 }: WorkspaceViewProps) {
   const user = getUser()
 
@@ -80,11 +87,37 @@ export function WorkspaceView({
   const [verification, setVerification] = useState<VerificationResult | undefined>(undefined)
   const [task, setTask] = useState<Partial<Task> | null>(null)
   const [provenanceOpen, setProvenanceOpen] = useState(false)
+  const [historyMessages, setHistoryMessages] = useState<ConversationMessage[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     if (activeTemplate) setPromptState(activeTemplate.defaultPrompt)
   }, [activeTemplate])
+
+  useEffect(() => {
+    if (activeConversationId == null) {
+      setHistoryMessages([])
+      return
+    }
+    let cancelled = false
+    setHistoryLoading(true)
+    fetchConversation(activeConversationId)
+      .then((detail) => {
+        if (cancelled) return
+        setHistoryMessages(detail.messages)
+        const lastAi = [...detail.messages].reverse().find((m) => m.role === 'assistant')
+        if (lastAi) setResponse(lastAi.content)
+        else setResponse('')
+      })
+      .catch(() => {
+        if (!cancelled) setHistoryMessages([])
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [activeConversationId])
 
   // Upsert a trace step by stepId, merging patch fields.
   function upsertStep(stepId: string, status: StepStatus, patch: Partial<AgentStep> = {}) {
@@ -110,7 +143,9 @@ export function WorkspaceView({
     })
   }
 
-  // Real streaming task via /chat/stream (SSE).
+  // Real streaming task via /chat/stream (SSE). Conversation-scoped: the prior
+  // thread (including file names) is threaded into the model prompt server-side
+  // so "what about the left side?" sees the same pump image.
   async function runRealStream(promptText: string, file?: File) {
     setLoading(true)
     setError('')
@@ -145,7 +180,10 @@ export function WorkspaceView({
 
     try {
       await streamChat(promptText, file, (raw) => {
-        const ev = raw as unknown as StreamEvent
+        const ev = raw as unknown as StreamEvent & { conversationId?: number }
+        if (ev.conversationId != null && onConversationChange) {
+          onConversationChange(ev.conversationId)
+        }
         const sid = ev.stepId
         const d = ev.data ?? {}
 
@@ -290,8 +328,12 @@ export function WorkspaceView({
           default:
             break
         }
-      }, controller.signal)
+      }, controller.signal, activeConversationId ?? undefined)
       setTask((prev) => ({ ...prev, status: prev?.status === 'failed' ? 'failed' : (prev?.status ?? 'completed') }))
+      onConversationsRefresh?.()
+      if (activeConversationId != null) {
+        fetchConversation(activeConversationId).then((detail) => setHistoryMessages(detail.messages)).catch(() => {})
+      }
       onRefreshOutputs()
       onRefreshSovereignty()
     } catch (err) {
@@ -400,6 +442,46 @@ export function WorkspaceView({
 
         {/* CENTER — Execution Trace / Console */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-ink">
+          {activeConversationId != null && (
+            <div className="flex max-h-[32vh] shrink-0 flex-col overflow-hidden border-b border-line bg-panel/30">
+              <div className="flex items-center justify-between border-b border-line/60 bg-ink/20 px-3 py-2">
+                <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-muted">Thread — continue this conversation</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => onConversationChange?.(null)}
+                    className="rounded border border-line bg-panel px-2 py-1 font-mono text-[9px] text-muted hover:text-slate-200"
+                  >
+                    New thread
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+                {historyLoading ? (
+                  <div className="py-4 text-center text-xs text-muted">Loading thread…</div>
+                ) : historyMessages.length === 0 ? (
+                  <div className="py-3 text-center text-[11px] text-slate-600">No prior turns in this conversation yet. Your next message will start the thread.</div>
+                ) : (
+                  historyMessages.slice(-10).map((m) => (
+                    <div key={m.id} className={`flex gap-2 ${m.role === 'user' ? '' : 'opacity-90'}`}>
+                      <span className={`mt-0.5 flex size-6 shrink-0 items-center justify-center border font-mono text-[8px] ${m.role === 'user' ? 'border-line bg-panel text-muted' : 'border-signal/30 bg-signal/10 text-signal'}`}>
+                        {m.role === 'user' ? 'YOU' : 'AI'}
+                      </span>
+                      <div className={`flex-1 border px-2.5 py-2 text-xs leading-5 ${m.role === 'user' ? 'border-line bg-panel/60 text-slate-200' : 'border-signal/20 bg-signal/5 text-slate-200'}`}>
+                        <div className="whitespace-pre-wrap break-words">{m.content || '—'}</div>
+                        {m.attachments.length > 0 && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {m.attachments.map((a) => (
+                              <span key={a.id} className="rounded border border-line bg-ink/50 px-1.5 py-0.5 font-mono text-[9px] text-muted">{a.filename}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
           <AgentConsole
             steps={steps}
             loading={loading}
@@ -410,6 +492,8 @@ export function WorkspaceView({
             artifacts={artifacts}
             verification={verification}
             onOpenApprovals={() => onNavigate('approvals')}
+            conversationId={activeConversationId ?? undefined}
+            onNewThread={() => onConversationChange?.(null)}
           >
             <TaskComposer
               onSubmit={handleSubmit}

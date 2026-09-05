@@ -52,3 +52,12 @@ sovereignty:
     cpu_seconds: 10
     memory_mb: 512
   data_residency: on-premise
+
+# Model admission policy — gates for the sovereign Model Center.
+model_admission:
+  allowed_architectures: ["qwen3", "qwen2", "llama", "mistral", "gemma", "phi", "deepseek", "ornith", "unknown"]
+  allowed_quantizations: ["Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "F16", "F32", "UNKNOWN"]
+  max_file_size_gb: 12
+  require_sha256_for_catalog: false
+  allow_external_download: false   # air-gapped: packages must be imported locally
+

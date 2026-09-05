@@ -126,7 +126,7 @@ def validate_endpoint(endpoint: str, timeout: float = 3.0) -> bool:
         return False
 
 
-def add_model(entry: ModelEntry) -> None:
+def add_model(entry: ModelEntry, serve: Optional[dict] = None) -> None:
     parsed = urlparse(entry.endpoint)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Enter a valid local model endpoint URL")
@@ -148,6 +148,8 @@ def add_model(entry: ModelEntry) -> None:
             "enabled": entry.enabled,
         },
     }
+    if serve:
+        config["serve"] = dict(serve)
     with _config_lock:
         _config[entry.role] = config
         _persist_config()
@@ -257,6 +259,7 @@ def list_models() -> list[dict]:
             "capabilities": info.get("capabilities", []),
             "status": "disabled" if runtime.get("enabled") is False else status,
             "active": is_role_active(role),
+            "serve": dict(info.get("serve") or {}),
             # Compatibility aliases for existing consumers.
             "vram_gb": metadata.get("estimated_vram_gb"),
             "context_tokens": runtime_context,

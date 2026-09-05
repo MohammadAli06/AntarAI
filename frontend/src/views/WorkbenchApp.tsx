@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  createConversation,
+  deleteConversation,
+  fetchConversations,
   fetchMe,
   fetchModels,
   fetchOutputs,
@@ -8,6 +11,7 @@ import {
   fetchTools,
   fetchUsers,
   switchDemoRole,
+  updateConversation,
 } from '../lib/api'
 import type { ToolInfo, UserInfo } from '../lib/api'
 import { AppShell } from '../components/layout/AppShell'
@@ -28,6 +32,7 @@ import { getUser, setToken, setUser } from '../lib/auth'
 import { PermissionGate } from '../lib/permissions'
 import type {
   ApiErrorState,
+  ConversationSummary,
   ModelInfo,
   OutputFile,
   SovereigntyStatus,
@@ -73,6 +78,11 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
   const [loading, setLoading] = useState({ outputs: true, models: true, sovereignty: true, tools: true, users: true, policies: true })
   const [errors, setErrors] = useState<ApiErrorState[]>([])
   const [activeTemplate, setActiveTemplate] = useState<WorkflowTemplate | null>(null)
+
+  const [conversations, setConversations] = useState<ConversationSummary[]>([])
+  const [activeConversationId, setActiveConversationId] = useState<number | null>(null)
+  const [conversationsLoading, setConversationsLoading] = useState(false)
+  const [conversationSearch, setConversationSearch] = useState('')
 
   // Sync the authoritative (signed-token) role + demo flag from the server.
   useEffect(() => {
@@ -139,6 +149,18 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
     finally { setLoading((c) => ({ ...c, tools: false })) }
   }, [])
 
+  const loadConversations = useCallback(async () => {
+    setConversationsLoading(true)
+    try {
+      const items = await fetchConversations({ q: conversationSearch || undefined, limit: 100 })
+      setConversations(items)
+    } catch {
+      /* non-fatal */
+    } finally {
+      setConversationsLoading(false)
+    }
+  }, [conversationSearch])
+
   useEffect(() => {
     void Promise.allSettled([
       loadOutputs(),
@@ -155,6 +177,13 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
         .finally(() => setLoading((c) => ({ ...c, policies: false }))),
     ])
   }, [loadOutputs, loadSovereignty, loadModels, loadTools])
+
+  useEffect(() => { void loadConversations() }, [loadConversations])
+
+  useEffect(() => {
+    const t = window.setTimeout(() => { void loadConversations() }, 350)
+    return () => window.clearTimeout(t)
+  }, [conversationSearch, loadConversations])
 
   function handleStartWorkflow(template: WorkflowTemplate) {
     setActiveTemplate(template)
@@ -186,6 +215,9 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
             onRefreshSovereignty={loadSovereignty}
             activeTemplate={activeTemplate}
             onNavigate={setActiveView}
+            activeConversationId={activeConversationId}
+            onConversationChange={setActiveConversationId}
+            onConversationsRefresh={loadConversations}
           />
         )
 
@@ -308,6 +340,54 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
     }
   }
 
+  async function handleNewConversation() {
+    try {
+      const conv = await createConversation('New conversation')
+      setConversations((prev) => [conv, ...prev])
+      setActiveConversationId(conv.id)
+      setActiveView('workspace')
+    } catch (err) {
+      setErrors((c) => [...c, { scope: 'tasks', message: err instanceof Error ? err.message : 'Could not create conversation' }])
+    }
+  }
+
+  async function handleRenameConversation(id: number, title: string) {
+    try {
+      const updated = await updateConversation(id, { title })
+      setConversations((prev) => prev.map((c) => (c.id === id ? updated : c)))
+    } catch (err) {
+      setErrors((c) => [...c, { scope: 'tasks', message: err instanceof Error ? err.message : 'Rename failed' }])
+    }
+  }
+
+  async function handleDeleteConversation(id: number) {
+    try {
+      await deleteConversation(id)
+      setConversations((prev) => prev.filter((c) => c.id !== id))
+      if (activeConversationId === id) setActiveConversationId(null)
+    } catch (err) {
+      setErrors((c) => [...c, { scope: 'tasks', message: err instanceof Error ? err.message : 'Delete failed' }])
+    }
+  }
+
+  async function handleArchiveConversation(id: number, archived: boolean) {
+    try {
+      const updated = await updateConversation(id, { archived })
+      setConversations((prev) => {
+        if (archived) return prev.filter((c) => c.id !== id)
+        return prev.map((c) => (c.id === id ? updated : c))
+      })
+      if (archived && activeConversationId === id) setActiveConversationId(null)
+    } catch (err) {
+      setErrors((c) => [...c, { scope: 'tasks', message: err instanceof Error ? err.message : 'Archive failed' }])
+    }
+  }
+
+  function handleSelectConversation(id: number) {
+    setActiveConversationId(id)
+    setActiveView('workspace')
+  }
+
   return (
     <AppShell
       activeView={activeView}
@@ -326,6 +406,17 @@ export function WorkbenchApp({ onLogout, theme, onToggleTheme }: WorkbenchAppPro
       onDemoRoleChange={handleDemoRoleChange}
       demoMode={demoMode}
       switching={switching}
+      conversations={conversations}
+      activeConversationId={activeConversationId}
+      onSelectConversation={handleSelectConversation}
+      onNewConversation={handleNewConversation}
+      onRenameConversation={handleRenameConversation}
+      onDeleteConversation={handleDeleteConversation}
+      onArchiveConversation={handleArchiveConversation}
+      onRefreshConversations={loadConversations}
+      conversationsLoading={conversationsLoading}
+      conversationSearch={conversationSearch}
+      onConversationSearchChange={setConversationSearch}
     >
       {renderView()}
     </AppShell>

@@ -1,10 +1,14 @@
 """
 Database — SQLAlchemy setup with SQLite.
 
-Three tables:
-  users     — auth, provisioned accounts only
-  tasks     — agent task history (feeds dashboard)
-  documents — uploaded file tracking (embeddings stay in ChromaDB)
+Tables:
+  users         — auth, provisioned accounts only
+  tasks         — agent task history (feeds dashboard + approvals)
+  documents     — uploaded file tracking (embeddings stay in ChromaDB)
+  conversations — per-user conversation threads (owner = user_id, enforced server-side)
+  messages      — ordered messages inside a conversation (user/assistant/tool)
+  attachments   — file refs bound to a conversation + optional message
+  task_access   — governed sharing: approver/admin visibility on another user's task
 """
 
 from __future__ import annotations
@@ -13,8 +17,10 @@ from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
+    ForeignKey,
     Integer,
     String,
     Text,
@@ -59,6 +65,7 @@ class Task(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True, index=True)
     task_type = Column(String, nullable=False)        # general / coder / vision
     model_used = Column(String, nullable=False)
     prompt_preview = Column(String, nullable=True)    # first 120 chars of message
@@ -94,6 +101,71 @@ class Document(Base):
     upload_date = Column(DateTime, default=datetime.utcnow)
 
 
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    title = Column(String, nullable=False, default="New conversation")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+    archived = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
+    role = Column(String, nullable=False)  # user | assistant | tool
+    content = Column(Text, nullable=False, default="")
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Attachment(Base):
+    __tablename__ = "attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=True, index=True)
+    file_path = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    file_type = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TaskAccess(Base):
+    __tablename__ = "task_access"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    access_type = Column(String, nullable=False, default="review")  # review | approval
+    granted_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ModelAdmission(Base):
+    """Immutable record of every model admitted through the Model Center."""
+
+    __tablename__ = "model_admissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_name = Column(String, nullable=False)
+    catalog_key = Column(String, nullable=True)
+    source = Column(String, nullable=False, default="local")  # catalog | local | offline-package
+    role = Column(String, nullable=False)
+    sha256 = Column(String, nullable=False, index=True)
+    node = Column(String, nullable=True)
+    port = Column(Integer, nullable=True)
+    checks_json = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    admitted_by = Column(String, nullable=False, default="admin")
+    admitted_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -105,6 +177,7 @@ def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
     _migrate_task_columns()
     _migrate_document_columns()
+    _migrate_conversation_tables()
 
 
 def _migrate_task_columns() -> None:
@@ -165,6 +238,21 @@ def _migrate_document_columns() -> None:
             ))
     except Exception:
         # Best-effort migration; startup must remain available for diagnostics.
+        pass
+
+
+def _migrate_conversation_tables() -> None:
+    """Ensure conversation-scoped tables/columns exist for older DBs."""
+    try:
+        insp = inspect(engine)
+        if insp.has_table("tasks"):
+            existing = {c["name"] for c in insp.get_columns("tasks")}
+            if "conversation_id" not in existing:
+                with engine.begin() as conn:
+                    from sqlalchemy import text as _text
+                    conn.execute(_text("ALTER TABLE tasks ADD COLUMN conversation_id INTEGER"))
+                    conn.execute(_text("CREATE INDEX IF NOT EXISTS ix_tasks_conversation_id ON tasks (conversation_id)"))
+    except Exception:
         pass
 
 

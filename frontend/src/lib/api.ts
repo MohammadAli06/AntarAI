@@ -56,6 +56,7 @@ interface RawModel {
   inspection_error?: string | null
   capabilities?: string[]
   active?: boolean
+  serve?: { node?: string; port?: number; host?: string; admitted_sha256?: string; source?: string; catalog_key?: string }
 }
 
 interface RawSovereigntyStatus {
@@ -248,6 +249,7 @@ export async function fetchModels(): Promise<ModelInfo[]> {
     gpuVramGb: model.gpu_vram_gb,
     metadataStatus: model.metadata_status,
     inspectionError: model.inspection_error,
+    serve: model.serve,
   }))
 }
 
@@ -328,6 +330,58 @@ export async function downloadOutputFile(filename: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Conversations — user-owned history (server-enforced, never client-filtered)
+// ---------------------------------------------------------------------------
+
+export async function fetchConversations(opts?: { q?: string; limit?: number; includeArchived?: boolean }): Promise<import('./types').ConversationSummary[]> {
+  const params = new URLSearchParams()
+  if (opts?.q) params.set('q', opts.q)
+  if (opts?.limit) params.set('limit', String(opts.limit))
+  if (opts?.includeArchived) params.set('include_archived', 'true')
+  const qs = params.toString()
+  const raw = await request<{ conversations: import('./types').ConversationSummary[] }>(`/conversations${qs ? `?${qs}` : ''}`)
+  return raw.conversations ?? []
+}
+
+export async function createConversation(title?: string): Promise<import('./types').ConversationSummary> {
+  const raw = await request<{ conversation: import('./types').ConversationSummary }>('/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: title ?? 'New conversation' }),
+  })
+  return raw.conversation
+}
+
+export async function fetchConversation(conversationId: number): Promise<import('./types').ConversationDetail> {
+  return request<import('./types').ConversationDetail>(`/conversations/${conversationId}`)
+}
+
+export async function updateConversation(conversationId: number, patch: { title?: string; archived?: boolean }): Promise<import('./types').ConversationSummary> {
+  const raw = await request<{ conversation: import('./types').ConversationSummary }>(`/conversations/${conversationId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  return raw.conversation
+}
+
+export async function deleteConversation(conversationId: number): Promise<void> {
+  await request(`/conversations/${conversationId}`, { method: 'DELETE' })
+}
+
+export async function fetchTaskDetail(taskId: number): Promise<{ task: import('./types').TaskItem & Record<string, unknown>; messages: import('./types').ConversationMessage[] }> {
+  return request(`/tasks/${taskId}`)
+}
+
+export async function shareTask(taskId: number, username: string, accessType = 'review'): Promise<void> {
+  await request(`/tasks/${taskId}/share`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, access_type: accessType }),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Real streaming chat — fetch + ReadableStream (POST carries multipart uploads)
 // ---------------------------------------------------------------------------
 
@@ -336,10 +390,12 @@ export async function streamChat(
   file: File | undefined,
   onEvent: (event: import('./types').SseEvent) => void,
   signal?: AbortSignal,
+  conversationId?: number,
 ): Promise<void> {
   const formData = new FormData()
   formData.append('message', message)
   if (file) formData.append('file', file)
+  if (conversationId != null) formData.append('conversation_id', String(conversationId))
 
   const response = await fetch(`${API_BASE_URL}/chat/stream`, {
     method: 'POST',
@@ -512,6 +568,160 @@ export async function updateModelEndpoint(role: string, endpoint: string): Promi
 
 export async function reloadModels(): Promise<void> {
   await request('/admin/models/reload', { method: 'POST' })
+}
+
+// ---------------------------------------------------------------------------
+// Model Center — sovereign admission pipeline
+// ---------------------------------------------------------------------------
+
+export interface CatalogModel {
+  key: string
+  name: string
+  model_id?: string
+  capability: string
+  family?: string
+  description?: string
+  parameters?: string
+  quantization?: string
+  size_gb?: number
+  context?: number
+  model_path?: string
+  sha256?: string
+  capabilities?: string[]
+  installed?: boolean
+  file_exists?: boolean
+}
+
+export interface AdmissionCheck {
+  id: string
+  label: string
+  status: 'passed' | 'failed' | 'running'
+  detail: string
+}
+
+export interface AdmissionPrecheckResult {
+  status: 'passed' | 'failed'
+  passed: number
+  total: number
+  checks: AdmissionCheck[]
+  metadata: Record<string, unknown> | null
+  hardware: { ok: boolean; detail: string }
+  nodes: { name: string; gpu?: string | null; vram_gb?: number | null; utilization_pct?: number | null }[]
+  policy?: Record<string, unknown>
+  error?: string
+}
+
+export interface AdmissionEvent {
+  type: 'admission.step' | 'admission.completed' | 'admission.failed'
+  step: string
+  status: 'running' | 'passed' | 'failed' | 'ready' | 'registered_offline'
+  detail: string
+  audit_id?: number
+  summary?: Record<string, unknown>
+}
+
+export interface AdmissionRecord {
+  id: number
+  model_name: string
+  catalog_key: string | null
+  source: string
+  role: string
+  sha256: string
+  node: string | null
+  port: number | null
+  checks: AdmissionCheck[] | null
+  metadata: Record<string, unknown> | null
+  admitted_by: string
+  admitted_at: string | null
+}
+
+export async function fetchModelCatalog(): Promise<{
+  catalog: CatalogModel[]
+  local_files: ModelFileInfo[]
+  policy: Record<string, unknown>
+}> {
+  const raw = await request<{
+    catalog?: CatalogModel[]
+    local_files?: ModelFileInfo[]
+    policy?: Record<string, unknown>
+  }>('/admin/models/catalog')
+  return { catalog: raw.catalog ?? [], local_files: raw.local_files ?? [], policy: raw.policy ?? {} }
+}
+
+export async function precheckAdmission(payload: {
+  source: string
+  role: string
+  catalog_key?: string
+  model_path?: string
+}): Promise<AdmissionPrecheckResult> {
+  return request<AdmissionPrecheckResult>('/admin/models/admission/precheck', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function startAdmission(
+  payload: {
+    source: string
+    role: string
+    catalog_key?: string
+    model_path?: string
+    description?: string
+    capabilities?: string[]
+    runtime_context_tokens?: number
+  },
+  onEvent: (event: AdmissionEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/admin/models/admission/stream`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+  if (response.status === 401) {
+    handleUnauthorized()
+    throw new Error('Session expired. Please log in again.')
+  }
+  if (!response.ok || !response.body) {
+    let detail = `Model admission failed (${response.status})`
+    try {
+      const body = (await response.json()) as { detail?: string }
+      if (body.detail) detail = body.detail
+    } catch {
+      /* keep status message */
+    }
+    throw new Error(detail)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 2)
+      const line = chunk.trim()
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload) continue
+      try {
+        onEvent(JSON.parse(payload) as AdmissionEvent)
+      } catch {
+        /* skip malformed chunk */
+      }
+    }
+  }
+}
+
+export async function fetchAdmissions(): Promise<AdmissionRecord[]> {
+  const raw = await request<{ admissions?: AdmissionRecord[] }>('/admin/models/admissions')
+  return raw.admissions ?? []
 }
 
 export async function toggleTool(name: string, enabled: boolean): Promise<void> {

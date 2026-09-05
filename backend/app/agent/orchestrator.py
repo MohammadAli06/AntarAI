@@ -90,6 +90,7 @@ def run_agent_stream(
     has_file: bool = False,
     filename: Optional[str] = None,
     file_path: Optional[str] = None,
+    history: Optional[list[dict]] = None,
 ) -> Iterator[dict]:
     """Yield SSE event dicts for one agentic turn (see module docstring)."""
     msg_lower = message.lower()
@@ -143,7 +144,7 @@ def run_agent_stream(
     # (for example, invoice numbers appearing beside a Python request).
     if role != "coder" and is_tool_enabled("rag"):
         try:
-            sources = retrieve_sources(message, n_results=3)
+            sources = retrieve_sources(_rag_query(message, history), n_results=5)
         except Exception as exc:
             logger.warning("RAG retrieval failed: %s", exc)
     elif role == "coder":
@@ -151,11 +152,13 @@ def run_agent_stream(
     log_event("RETR", f"Vector search complete — {len(sources)} sources retrieved")
     yield _ev("knowledge.completed", {"sources": sources}, step_id="knowledge")
 
-    # ── 5. Build prompt (inject RAG context) ──────────────────────────────
+    # ── 5. Build prompt (inject RAG context + conversation history) ───────
     if extracted_text and role == "vision":
         prompt = build_extraction_prompt(extracted_text, message)
+        if history:
+            prompt = _inject_history(prompt, history)
     else:
-        prompt = _build_prompt(role, message, filename, extracted_text, sources)
+        prompt = _build_prompt(role, message, filename, extracted_text, sources, history=history)
 
     # ── 6. Model call ─────────────────────────────────────────────────────
     yield _ev("model.started", {"model": model_info["name"], "role": role}, step_id="model")
@@ -310,9 +313,10 @@ def run_agent(
     has_file: bool = False,
     filename: Optional[str] = None,
     file_path: Optional[str] = None,
+    history: Optional[list[dict]] = None,
 ) -> AgentResult:
     result = AgentResult()
-    for ev in run_agent_stream(message, has_file, filename, file_path):
+    for ev in run_agent_stream(message, has_file, filename, file_path, history=history):
         etype = ev["type"]
         data = ev.get("data", {})
 
@@ -448,6 +452,7 @@ def _build_prompt(
     filename: Optional[str],
     extracted_text: str,
     sources: list[dict],
+    history: Optional[list[dict]] = None,
 ) -> str:
     system_prompts = {
         "general": (
@@ -487,18 +492,79 @@ def _build_prompt(
         user_parts.append(f"Document content:\n{extracted_text[:3000]}")
     if sources:
         ctx = "\n\n".join(
-            f"[{s['id']}] {s['title']} ({s.get('section','')}): {s.get('excerpt','')}"
+            f"[{s['id']}] {s['title']} ({s.get('section','')}): {s.get('content') or s.get('excerpt','')}"
             for s in sources
         )
         user_parts.append(f"Retrieved organizational knowledge:\n{ctx}")
     user_parts.append(message)
 
     user_content = "\n\n".join(user_parts)
+    history_block = _format_history(history)
+    if history_block:
+        # Prior turns must be role-tagged ChatML messages, not prose inside the
+        # system block: the model otherwise treats them as instructions rather
+        # than as the dialogue they are.
+        return (
+            f"<|im_start|>system\n{system}<|im_end|>\n"
+            f"{history_block}"
+            f"<|im_start|>user\n{user_content}<|im_end|>\n"
+            f"<|im_start|>assistant\n"
+        )
     return (
         f"<|im_start|>system\n{system}<|im_end|>\n"
         f"<|im_start|>user\n{user_content}<|im_end|>\n"
         f"<|im_start|>assistant\n"
     )
+
+
+def _format_history(history: Optional[list[dict]]) -> str:
+    """Render prior turns as proper ChatML messages (user/assistant pairs)."""
+    if not history:
+        return ""
+    blocks: list[str] = []
+    for turn in history[-12:]:
+        role = (turn.get("role") or "user").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = (turn.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 1800:
+            content = content[:1800] + "…"
+        files = ", ".join(turn.get("attachments") or [])
+        suffix = f"\n[files: {files}]" if files else ""
+        blocks.append(f"<|im_start|>{role}\n{content}{suffix}<|im_end|>")
+    return "\n".join(blocks) + ("\n" if blocks else "")
+
+
+def _inject_history(vision_prompt: str, history: list[dict]) -> str:
+    """Splice role-tagged prior turns before the current user message."""
+    block = _format_history(history)
+    if not block:
+        return vision_prompt
+    return vision_prompt.replace("<|im_start|>user\n", block + "<|im_start|>user\n", 1)
+
+
+def _rag_query(message: str, history: Optional[list[dict]]) -> str:
+    """Build the vector-search query from the current message plus context.
+
+    A bare follow-up ("now for shell course 1") embeds almost no signal, so
+    prepend the previous user turn. This expanded string only drives
+    retrieval — it is never shown to the user or the model.
+    """
+    if not history:
+        return message
+    prior_user_turns = [
+        (turn.get("content") or "").strip()
+        for turn in history[-4:]
+        if (turn.get("role") or "").strip().lower() == "user"
+    ]
+    prior = [turn for turn in prior_user_turns if turn and turn != message]
+    if not prior:
+        return message
+    query = " ".join([prior[-1], message])
+    log_event("RETR", f"RAG query expanded with prior turn ({len(prior[-1])} chars of context)")
+    return query
 
 
 def _format_extraction_response(raw_response: str, fields: dict) -> str:

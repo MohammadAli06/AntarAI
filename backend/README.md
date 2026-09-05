@@ -129,9 +129,9 @@ $env:JWT_SECRET_KEY = "replace-with-a-long-random-secret"
 1. `task.created`
 2. `router.started/completed` — `classify_task()` → `get_model_for_role()` → `modelRoute` card payload
 3. `ocr.started/completed` — Tesseract when a file is present
-4. `knowledge.started/completed` — `retrieve_sources()` (ChromaDB, 3 hits, `EvidenceSource[]`)
-5. Prompt assembled (role system preamble + file name + extracted text + RAG context → ChatML)
-6. `model.started/completed` — `call_model(role, prompt, n_predict=1024 for coder else 512)` to llama.cpp
+4. `knowledge.started/completed` — `retrieve_sources()` (ChromaDB, 3 hits, `EvidenceSource[]`). The query is expanded with the prior user turn (`_rag_query`) so follow-ups retrieve meaningfully.
+5. Prompt assembled (role system preamble + role-tagged conversation history + file name + extracted text + RAG context → ChatML)
+6. `model.started/completed` — `call_model(role, prompt, n_predict=2048 for coder else 512)` to llama.cpp
 7. Vision field extraction + doc generation (`generate_approval_note`) / sandbox (`run_code_sandbox`)
 8. `verification.started/completed` — `verify_artifact()` (re-execution / doc-structure + `sha256_file()`)
 9. `artifact.created` — `sha256` + `downloadUrl`

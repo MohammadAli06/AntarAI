@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 _CHROMA_DIR = Path(__file__).resolve().parents[2] / "data" / "chroma"
 _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
-_CHUNK_SIZE = 500   # chars
-_CHUNK_OVERLAP = 50
+_CHUNK_SIZE = 1500  # chars; keeps typical Markdown sections/tables together
+_CHUNK_OVERLAP = 100
 # A vector store always returns its nearest chunks, even when none are useful.
 # Do not present those weak neighbours as evidence in an agent response.
 _MIN_EVIDENCE_RELEVANCE = 0.35
@@ -167,16 +167,25 @@ def ingest_document(
         return {"status": "unavailable", "chunks": 0,
                 "reason": "ChromaDB not installed"}
 
-    chunks = _chunk_text(text)
-    if not chunks:
+    chunk_pairs = _chunk_text(text)
+    if not chunk_pairs:
         return {"status": "unavailable", "chunks": 0, "reason": "No text to index"}
 
+    chunks = [chunk for chunk, _ in chunk_pairs]
     doc_prefix = f"doc_{doc_id or filename}"
     ids = [f"{doc_prefix}_chunk_{i}" for i in range(len(chunks))]
-    metas = [{"filename": filename, "doc_id": str(doc_id or ""), "chunk": i}
-             for i in range(len(chunks))]
+    # Small-to-big retrieval: embed and match on the chunk, but store the full
+    # parent section alongside it so retrieval can return complete context.
+    metas = [{"filename": filename, "doc_id": str(doc_id or ""), "chunk": i,
+              "parent_section": parent}
+             for i, (_, parent) in enumerate(chunk_pairs)]
 
     try:
+        # Re-indexing a document must replace its previous chunk layout. Without
+        # this, obsolete character-sliced chunks remain searchable beside the
+        # new section-preserving chunks.
+        if doc_id is not None:
+            _collection.delete(where={"doc_id": str(doc_id)})
         _collection.upsert(documents=chunks, ids=ids, metadatas=metas)
         logger.info("Ingested %d chunks from %s into ChromaDB", len(chunks), filename)
         return {"status": "indexed", "chunks": len(chunks)}
@@ -264,6 +273,7 @@ def retrieve_sources(query: str, n_results: int = 3, min_relevance: float = _MIN
     dists = results.get("distances", [[]])[0]
 
     sources: list[dict] = []
+    seen_sections: set[str] = set()
     for i, chunk in enumerate(docs):
         meta = metas[i] if i < len(metas) else {}
         dist = dists[i] if i < len(dists) else 1.0
@@ -271,12 +281,22 @@ def retrieve_sources(query: str, n_results: int = 3, min_relevance: float = _MIN
         relevance = max(0.0, min(1.0, 1.0 - float(dist)))
         if relevance < min_relevance:
             continue
+        # Small-to-big retrieval: the chunk was only used to *find* the right
+        # section — what reaches the model and the UI is the complete parent
+        # section, so a split fragment can never surface as partial evidence.
+        full_text = meta.get("parent_section") or chunk or ""
+        if full_text in seen_sections:
+            continue
+        seen_sections.add(full_text)
         sources.append({
             "id": f"src-{i + 1}",
             "title": Path(filename).stem if filename else "knowledge",
             "section": f"chunk {meta.get('chunk', i)}",
             "relevanceScore": round(relevance, 2),
-            "excerpt": (chunk or "")[:200],
+            "excerpt": full_text,
+            # Full parent-section evidence for prompt grounding; a table must
+            # reach the model intact, never as a header-less row fragment.
+            "content": full_text,
             "sourceType": _infer_source_type(filename),
         })
 
@@ -338,12 +358,102 @@ def _infer_source_type(filename: str) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _chunk_text(text: str) -> list[str]:
-    """Split text into overlapping chunks."""
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + _CHUNK_SIZE
-        chunks.append(text[start:end])
-        start += _CHUNK_SIZE - _CHUNK_OVERLAP
-    return [c.strip() for c in chunks if c.strip()]
+def _chunk_text(text: str) -> list[tuple[str, str]]:
+    """Split Markdown by section into (chunk, parent_section) pairs.
+
+    Character slicing makes a table row lose its header or splits a row in
+    half. Most SOP sections fit within the chunk budget, so keep each one
+    atomic; only split oversized sections at complete line boundaries. Every
+    chunk carries its full parent section so retrieval can return complete
+    context instead of a truncated fragment.
+    """
+    sections = re.split(r"(?m)(?=^#{1,3}\s+)", text)
+    pairs: list[tuple[str, str]] = []
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+        if len(section) <= _CHUNK_SIZE:
+            pairs.append((section, section))
+        else:
+            pairs.extend((chunk, section) for chunk in _split_preserving_lines(section))
+    return pairs
+
+
+def _split_preserving_lines(section: str) -> list[str]:
+    """Split an oversized section at line boundaries with line-safe overlap.
+
+    Tables are split by row with the header and separator re-attached to every
+    fragment, so no data row ever loses the column labels that give it meaning.
+    """
+    lines = section.splitlines()
+    table_start = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith("|")), None
+    )
+    if (
+        table_start is not None
+        and table_start + 1 < len(lines)
+        and _is_table_separator(lines[table_start + 1])
+    ):
+        return _split_table_aware(lines, table_start)
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_size = 0
+
+    for line in lines:
+        line_size = len(line) + 1
+        if current and current_size + line_size > _CHUNK_SIZE:
+            chunks.append("\n".join(current).strip())
+
+            overlap: list[str] = []
+            overlap_size = 0
+            for previous_line in reversed(current):
+                size = len(previous_line) + 1
+                if overlap and overlap_size + size > _CHUNK_OVERLAP:
+                    break
+                overlap.insert(0, previous_line)
+                overlap_size += size
+            current = overlap
+            current_size = overlap_size
+
+        current.append(line)
+        current_size += line_size
+
+    if current:
+        chunks.append("\n".join(current).strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def _is_table_separator(line: str) -> bool:
+    """Whether *line* is a Markdown table separator row like |---|---|---|."""
+    stripped = line.strip()
+    return bool(stripped) and "-" in stripped and all(c in "|-: " for c in stripped)
+
+
+def _split_table_aware(lines: list[str], table_start: int) -> list[str]:
+    """Split an oversized section at table row boundaries.
+
+    Every fragment keeps the section preamble, the table header and its
+    separator row, so a chunk holding only a slice of data rows still carries
+    the column labels that give those rows meaning.
+    """
+    prefix_lines = lines[:table_start] + [lines[table_start]]
+    if table_start + 1 < len(lines):
+        prefix_lines.append(lines[table_start + 1])
+    prefix = "\n".join(prefix_lines)
+
+    chunks: list[str] = []
+    current_rows: list[str] = []
+    for row in lines[table_start + 2:]:
+        current_rows.append(row)
+        candidate = "\n".join([prefix] + current_rows)
+        if len(candidate) > _CHUNK_SIZE:
+            current_rows.pop()  # this row pushed it over — close out without it
+            if current_rows:
+                chunks.append("\n".join([prefix] + current_rows).strip())
+            current_rows = [row]  # start the next fragment with the overflowing row
+
+    if current_rows:
+        chunks.append("\n".join([prefix] + current_rows).strip())
+    return [chunk for chunk in chunks if chunk]

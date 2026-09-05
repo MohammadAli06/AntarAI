@@ -231,9 +231,47 @@ export type SseEventType =
 export interface SseEvent {
   type: SseEventType
   taskId: string
+  conversationId?: number
   stepId?: string
   timestamp: string
   data?: Record<string, unknown>
+}
+
+export interface ConversationSummary {
+  id: number
+  user_id: number
+  title: string
+  created_at: string | null
+  updated_at: string | null
+  archived: boolean
+  message_count?: number
+  last_message_preview?: string | null
+}
+
+export interface ConversationAttachment {
+  id: number
+  filename: string
+  file_type?: string | null
+  file_path: string
+  size_bytes?: number | null
+  message_id?: number | null
+}
+
+export interface ConversationMessage {
+  id: number
+  conversation_id: number
+  role: 'user' | 'assistant' | 'tool' | string
+  content: string
+  task_id?: number | null
+  created_at: string | null
+  attachments: ConversationAttachment[]
+  task?: Record<string, unknown> | null
+}
+
+export interface ConversationDetail {
+  conversation: ConversationSummary
+  messages: ConversationMessage[]
+  attachments: ConversationAttachment[]
 }
 
 // ── Workflow templates ────────────────────────────────────────────────────────
@@ -301,6 +339,7 @@ export interface ModelInfo {
   gpuVramGb?: number | null
   metadataStatus?: 'detected' | 'not_inspected' | 'error' | string
   inspectionError?: string | null
+  serve?: { node?: string; port?: number; host?: string; admitted_sha256?: string; source?: string; catalog_key?: string }
 }
 
 

@@ -381,10 +381,12 @@ interface AgentConsoleProps {
   artifacts?: import('../../lib/types').Artifact[]
   verification?: import('../../lib/types').VerificationResult
   onOpenApprovals?: () => void
+  conversationId?: number
+  onNewThread?: () => void
   children?: React.ReactNode // for TaskComposer slot
 }
 
-export function AgentConsole({ steps, loading, response, prompt, task, sources, artifacts, verification, onOpenApprovals, children }: AgentConsoleProps) {
+export function AgentConsole({ steps, loading, response, prompt, task, sources, artifacts, verification, onOpenApprovals, conversationId, onNewThread, children }: AgentConsoleProps) {
   const [mode, setMode] = useState<ConsoleMode>('execution')
   const MODES: { id: ConsoleMode; label: string }[] = [
     { id: 'conversation', label: 'Conversation' },
@@ -409,12 +411,22 @@ export function AgentConsole({ steps, loading, response, prompt, task, sources, 
             {m.label}
           </button>
         ))}
-        {loading && (
-          <div className="ml-auto flex items-center gap-1.5 pr-4">
-            <Icon icon={Loader2} size={11} className="text-signal animate-spin" />
-            <span className="font-mono text-[8px] text-signal">RUNNING</span>
-          </div>
-        )}
+        <div className="ml-auto flex items-center gap-2 pr-3">
+          {conversationId != null && (
+            <span className="hidden font-mono text-[8px] text-muted sm:inline">Thread #{conversationId}</span>
+          )}
+          {conversationId != null && onNewThread && (
+            <button onClick={onNewThread} className="rounded border border-line bg-panel px-2 py-1 font-mono text-[8px] text-muted hover:text-slate-200">
+              New thread
+            </button>
+          )}
+          {loading && (
+            <>
+              <Icon icon={Loader2} size={11} className="text-signal animate-spin" />
+              <span className="font-mono text-[8px] text-signal">RUNNING</span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Content area */}
